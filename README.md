@@ -1,34 +1,74 @@
-# hyperfleet-applier
+# HyperFleet Applier
 
-The HyperFleet desire contract and applier.
+Go library for the HyperFleet **desire contract** and store backends. A desire is
+the declarative intent for a single Kubernetes resource on a management cluster
+(apply, delete, or read). Store backends persist that intent and its status so
+appliers can reconcile resources without ManifestWork-style bulk transport.
 
-## Description
+It collaborates with other HyperFleet components:
 
-This repository defines the HyperFleet **desire contract** - the declarative
-intent for a fleet - and the **applier** that reconciles that desire against a
-backend store. It is part of the HyperFleet initiative tracked by epic
-[HYPERFLEET-1418](https://issues.redhat.com/browse/HYPERFLEET-1418).
+* **[API](https://github.com/openshift-hyperfleet/hyperfleet-api)** is the source of truth for fleet resource desired state and aggregated status
+* **[Sentinel](https://github.com/openshift-hyperfleet/hyperfleet-sentinel)** polls the API and publishes CloudEvents that drive reconciliation
+* **[Adapter](https://github.com/openshift-hyperfleet/hyperfleet-adapter)** listens for those events, applies changes, and reports status back to the API
 
-The concrete desire types, store interfaces, and backends are delivered in
-follow-up tickets; this repository currently provides the module foundation
-(`pkg/desire`).
+## Quick Start
+
+### Try Locally
+
+**Prerequisites:** Go 1.26+, Make
+
+```bash
+make build
+make test
+make lint
+```
+
+Run `make help` for the full list of targets.
+
+### Package layout
+
+| Package | Description |
+|---------|-------------|
+| [`pkg/desire`](pkg/desire) | Desire types (`ApplyDesire`, `DeleteDesire`, `ReadDesire`), identity validation, `SpecStore` / `StatusStore` interfaces |
+| [`pkg/desire/store/memory`](pkg/desire/store/memory) | In-memory store for unit tests |
+| [`pkg/desire/store/redis`](pkg/desire/store/redis) | Redis-backed store with WATCH/MULTI/EXEC CAS |
+| [`pkg/desire/store/conformance`](pkg/desire/store/conformance) | Shared conformance suite exercised by both backends |
+
+```bash
+go get github.com/openshift-hyperfleet/hyperfleet-applier
+```
+
+## Documentation
+
+### For Developers
+
+| Resource | Description |
+|----------|-------------|
+| `make help` | Build, test, lint, format, and verify targets |
+| [`pkg/desire` package docs](pkg/desire/doc.go) | Desire model, identity rules, and store contracts |
+
+### Architecture
+
+| Resource | Description |
+|----------|-------------|
+| [HyperFleet Architecture](https://github.com/openshift-hyperfleet/architecture) | System design |
+| [HyperFleet API Spec](https://github.com/openshift-hyperfleet/hyperfleet-api-spec) | API contract |
+| [Broker Library](https://github.com/openshift-hyperfleet/hyperfleet-broker) | Messaging abstraction |
+| [Infrastructure](https://github.com/openshift-hyperfleet/hyperfleet-infra) | Deployment automation |
 
 ## Security posture
 
 Credentials are stored scoped to the applier's own partition by convention.
-Cryptographic enforcement of that scoping arrives with the production backends
-(see HYPERFLEET-1423).
+Cryptographic enforcement of that scoping arrives with the production backends.
 
-## Development
+## Contributing
 
-Run `make help` for the full list of targets. Common ones:
+1. Verify you're a member of the `openshift-hyperfleet` organization
+2. Confirm you're added to the hyperfleet team
+3. Code reviews and approvals are managed through the OWNERS file
 
-```sh
-make build   # go build ./...
-make test    # go test ./...
-make lint    # golangci-lint run
-```
+For access issues, contact a repository administrator or organization owner.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.

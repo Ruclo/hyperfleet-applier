@@ -110,7 +110,7 @@ func TestReadDesire_StatusJSON(t *testing.T) {
 		Status: desire.ReadStatus{
 			Status: desire.Status{
 				Conditions: []metav1.Condition{{
-					Type:   desire.TypeAvailable,
+					Type:   desire.TypeSuccessful,
 					Status: metav1.ConditionTrue,
 					Reason: desire.ReasonApplied,
 				}},

@@ -54,9 +54,9 @@ func newReadDesire(id desire.Identity, owner string) desire.ReadDesire {
 	}
 }
 
-func condition(condType string, reason string) metav1.Condition {
+func condition(typ desire.DesireType, reason string) metav1.Condition { //nolint:unparam
 	return metav1.Condition{
-		Type:               condType,
+		Type:               string(typ),
 		Status:             metav1.ConditionTrue,
 		Reason:             reason,
 		Message:            reason,
@@ -195,7 +195,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 			withStatus, err := statusStore.UpdateApplyDesireStatus(
 				ctx, idApply,
-				desire.Status{Conditions: []metav1.Condition{condition(desire.TypeAvailable, desire.ReasonApplied)}},
+				desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)}},
 				created.Version+1, // bumped by CreateReadDesire
 			)
 			if err != nil {
@@ -780,9 +780,10 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				t.Fatalf("CreateApplyDesire: %v", err)
 			}
 
-			readyCondition := condition("Ready", desire.ReasonApplied)
 			updated, err := store.UpdateApplyDesireStatus(
-				ctx, id, desire.Status{Conditions: []metav1.Condition{readyCondition}}, created.Version,
+				ctx, id,
+				desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)}},
+				created.Version,
 			)
 			if err != nil {
 				t.Fatalf("UpdateApplyDesireStatus: %v", err)
@@ -805,9 +806,10 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				t.Fatalf("CreateApplyDesire: %v", err)
 			}
 
-			readyCondition := condition("Ready", desire.ReasonApplied)
 			afterStatus, err := store.UpdateApplyDesireStatus(
-				ctx, id, desire.Status{Conditions: []metav1.Condition{readyCondition}}, created.Version,
+				ctx, id,
+				desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)}},
+				created.Version,
 			)
 			if err != nil {
 				t.Fatalf("UpdateApplyDesireStatus: %v", err)
@@ -848,7 +850,9 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				t.Fatalf("CreateDeleteDesire: %v", err)
 			}
 
-			status := desire.Status{Conditions: []metav1.Condition{condition("Ready", desire.ReasonDeleteInProgress)}}
+			status := desire.Status{Conditions: []metav1.Condition{
+				condition(desire.TypeSuccessful, desire.ReasonWaitingForDeletion),
+			}}
 			updated, err := store.UpdateDeleteDesireStatus(ctx, id, status, created.Version)
 			if err != nil {
 				t.Fatalf("UpdateDeleteDesireStatus: %v", err)
@@ -864,7 +868,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			if err != nil {
 				t.Fatalf("GetDeleteDesire: %v", err)
 			}
-			if len(got.Status.Conditions) != 1 || got.Status.Conditions[0].Reason != desire.ReasonDeleteInProgress {
+			if len(got.Status.Conditions) != 1 || got.Status.Conditions[0].Reason != desire.ReasonWaitingForDeletion {
 				t.Errorf("expected persisted delete status, got %+v", got.Status.Conditions)
 			}
 		})
@@ -879,7 +883,9 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				t.Fatalf("CreateDeleteDesire: %v", err)
 			}
 
-			status := desire.Status{Conditions: []metav1.Condition{condition("Ready", desire.ReasonDeleteInProgress)}}
+			status := desire.Status{Conditions: []metav1.Condition{
+				condition(desire.TypeSuccessful, desire.ReasonWaitingForDeletion),
+			}}
 			if _, updateErr := store.UpdateDeleteDesireStatus(ctx, id, status, created.Version); updateErr != nil {
 				t.Fatalf("UpdateDeleteDesireStatus: %v", updateErr)
 			}
@@ -911,7 +917,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 
 			status := desire.ReadStatus{
-				Status: desire.Status{Conditions: []metav1.Condition{condition("Completed", "Read")}},
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
 			}
 			updated, err := store.UpdateReadDesireStatus(ctx, id, status, created.Version)
 			if err != nil {
@@ -940,7 +946,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 
 			content := json.RawMessage(`{"kind":"ConfigMap","data":{"k":"v"}}`)
 			readStatus := desire.ReadStatus{
-				Status:      desire.Status{Conditions: []metav1.Condition{condition("Completed", "Read")}},
+				Status:      desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
 				KubeContent: content,
 			}
 			updated, err := store.UpdateReadDesireStatus(ctx, id, readStatus, created.Version)

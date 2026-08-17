@@ -26,13 +26,13 @@ func ReportOwnerConflict(ctx context.Context, rk ResourceKey, existingOwner, att
 	ctx = hflog.WithResourceType(ctx, "desire")
 	ctx = hflog.WithResourceID(ctx, rk.String())
 	slog.WarnContext(ctx, "desire: owner conflict",
-		"managementCluster", rk.ManagementCluster,
+		"management_cluster", rk.ManagementCluster,
 		"group", rk.Group,
 		"resource", rk.Resource,
 		"namespace", rk.Namespace,
 		"name", rk.Name,
-		"existingOwner", existingOwner,
-		"attemptedOwner", attemptedOwner,
+		"existing_owner", existingOwner,
+		"attempted_owner", attemptedOwner,
 	)
 }
 

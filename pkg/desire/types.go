@@ -59,10 +59,8 @@ func (rk ResourceKey) String() string {
 	}, "/")
 }
 
-// ManagementClusterKeyPrefix is the Redis/SCAN key prefix for all records in
-// a management cluster (matches the leading segment of ResourceKey.String).
-// PathEscape percent-encodes Redis glob metacharacters (*, ?, [) so the
-// trailing "*" in SCAN patterns matches only the rest of the key.
+// ManagementClusterKeyPrefix is the Redis/SCAN key prefix for a management cluster.
+// PathEscape keeps glob metacharacters out of the SCAN MATCH pattern.
 func ManagementClusterKeyPrefix(managementCluster string) string {
 	return "desire/" + url.PathEscape(managementCluster) + "/"
 }
@@ -92,44 +90,49 @@ func (rk ResourceKey) Identity(t DesireType) Identity {
 	}
 }
 
-// Condition types follow the Kubernetes metav1.Condition convention.
+// Conditions follow the Kubernetes metav1.Condition convention.
+//
+// Every desire carries a single summary condition, Successful, with positive
+// polarity: Status=True means the desired state is currently achieved. The
+// specific outcome is carried by the machine-readable Reason. This mirrors the
+// rest of the HyperFleet status contract, which is uniformly one binary
+// condition plus a reason (e.g. the API's per-adapter "<Adapter>Successful"
+// condition and the aggregate "Reconciled"), and follows the Kubernetes API
+// convention of a summarizing top-level condition for simple consumers.
+//
+// "In progress" is not a condition status: like the rest of the system, a
+// not-yet-achieved desire is Successful=False with a non-error reason
+// (WaitingForDeletion), distinguished from failure by the reason, not by a
+// separate Progressing/Degraded condition.
 //
 // Condition semantics:
 //
-//	Successful outcomes
-//	  Available=True  + ReasonApplied  - ApplyDesire reconciled to the cluster
-//	  Available=True  + ReasonDeleted  - DeleteDesire confirmed the object is gone
-//	  Available=True  + ReasonSynced   - ReadDesire mirrored live object state
+//	Successful=True  (desired state achieved)
+//	  ReasonApplied - ApplyDesire reconciled to the cluster
+//	  ReasonDeleted - DeleteDesire confirmed the object is gone past finalizers
+//	  ReasonSynced  - ReadDesire mirrored live object state
 //
-//	In progress / waiting
-//	  Progressing=True + ReasonApplyInProgress / ReasonDeleteInProgress /
-//	    ReasonReadInProgress - work underway
-//	  Progressing=True + ReasonWaitingForDeletion - delete issued; waiting on
-//	    finalizers / graceful termination
+//	Successful=False, in progress (not an error)
+//	  ReasonWaitingForDeletion - delete issued; waiting on finalizers / graceful termination
 //
-//	Failures
-//	  Degraded=True + ReasonApplyFailed / ReasonDeleteFailed / ReasonReadFailed
-//	    - Kubernetes API errors from the applier
-//	  Degraded=True + ReasonConflict - pre-check failure (e.g. delete pending,
-//	    stale intent) before contacting the API
-//	  Degraded=True + ReasonOwnershipConflict - non-owner write/delete rejected
+//	Successful=False, error
+//	  ReasonKubeAPIError   - the kube-apiserver call failed
+//	  ReasonPreCheckFailed - the call could not be executed at all (e.g. unparseable manifest)
 const (
-	TypeAvailable   = "Available"
-	TypeProgressing = "Progressing"
-	TypeDegraded    = "Degraded"
+	// TypeSuccessful is the single summary condition every desire carries.
+	TypeSuccessful = "Successful"
 
-	ReasonApplied            = "Applied"
-	ReasonDeleted            = "Deleted"
-	ReasonSynced             = "Synced"
-	ReasonApplyInProgress    = "ApplyInProgress"
-	ReasonDeleteInProgress   = "DeleteInProgress"
-	ReasonReadInProgress     = "ReadInProgress"
+	// Success reasons (Successful=True).
+	ReasonApplied = "Applied"
+	ReasonDeleted = "Deleted"
+	ReasonSynced  = "Synced"
+
+	// In-progress reason (Successful=False, not an error).
 	ReasonWaitingForDeletion = "WaitingForDeletion"
-	ReasonApplyFailed        = "ApplyFailed"
-	ReasonDeleteFailed       = "DeleteFailed"
-	ReasonReadFailed         = "ReadFailed"
-	ReasonConflict           = "Conflict"
-	ReasonOwnershipConflict  = "OwnershipConflict"
+
+	// Failure reasons (Successful=False).
+	ReasonKubeAPIError   = "KubeAPIError"
+	ReasonPreCheckFailed = "PreCheckFailed"
 )
 
 // Status is the uniform condition contract across all desire types.

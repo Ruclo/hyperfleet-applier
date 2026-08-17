@@ -74,14 +74,8 @@ func (s *Store) loadRecord(ctx context.Context, key string) (*resourceRecord, er
 	return &rec, nil
 }
 
-// casMutate runs mutate under WATCH/MULTI/EXEC on key. mutate receives the
-// current record (zero value when the key is absent) and must return a typed
-// desire error to abort without writing. On TxFailedErr the whole attempt is
-// retried; exhausting retries yields ErrVersionConflict.
-//
-// Returning errCASNoop from mutate aborts without writing and yields
-// (nil, nil): no record and no error. Callers that project the result must
-// treat a nil record as "no write happened"; the project* helpers are nil-safe.
+// casMutate runs mutate under WATCH/MULTI/EXEC. TxFailedErr retries up to
+// maxCASRetries, then returns ErrAborted. errCASNoop yields (nil, nil).
 func (s *Store) casMutate(
 	ctx context.Context, key string, mutate func(rec *resourceRecord, exists bool) error,
 ) (*resourceRecord, error) {
@@ -129,7 +123,6 @@ func (s *Store) casMutate(
 		case err == nil:
 			return out, nil
 		case errors.Is(err, errCASNoop):
-			// No write ran; out stays unset.
 			return nil, nil
 		case errors.Is(err, redis.TxFailedErr):
 			continue
@@ -137,7 +130,7 @@ func (s *Store) casMutate(
 			return nil, err
 		}
 	}
-	return nil, desire.ErrVersionConflict
+	return nil, desire.ErrAborted
 }
 
 // newApplyRecord builds a fresh record for a new ApplyDesire.
@@ -519,7 +512,7 @@ func (s *Store) ListApplyDesires(ctx context.Context, managementCluster string) 
 		return nil, err
 	}
 
-	var result []desire.ApplyDesire
+	result := make([]desire.ApplyDesire, 0, len(records))
 	for _, cr := range records {
 		if cr.Record.Apply != nil {
 			result = append(result, s.projectApplyDesire(cr.Record))
@@ -535,7 +528,7 @@ func (s *Store) ListDeleteDesires(ctx context.Context, managementCluster string)
 		return nil, err
 	}
 
-	var result []desire.DeleteDesire
+	result := make([]desire.DeleteDesire, 0, len(records))
 	for _, cr := range records {
 		if cr.Record.Delete {
 			result = append(result, s.projectDeleteDesire(cr.Record))
@@ -551,7 +544,7 @@ func (s *Store) ListReadDesires(ctx context.Context, managementCluster string) (
 		return nil, err
 	}
 
-	var result []desire.ReadDesire
+	result := make([]desire.ReadDesire, 0, len(records))
 	for _, cr := range records {
 		if cr.Record.Read {
 			result = append(result, s.projectReadDesire(cr.Record))

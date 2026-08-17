@@ -21,6 +21,16 @@ func TestMemoryStore_StatusStoreConformance(t *testing.T) {
 	})
 }
 
+func TestProjectApplyDesire_NilSafe(t *testing.T) {
+	s := New()
+	if got := s.projectApplyDesire(nil); got.Version != 0 || got.Owner != "" || got.Spec.KubeContent != nil {
+		t.Errorf("projectApplyDesire(nil) = %+v, want zero value", got)
+	}
+	if got := s.projectApplyDesire(&resourceRecord{}); got.Version != 0 || got.Spec.KubeContent != nil {
+		t.Errorf("projectApplyDesire(nil Apply) = %+v, want zero value", got)
+	}
+}
+
 func TestCreateApplyDesire_AttachesToExistingRead(t *testing.T) {
 	store := New()
 	ctx := context.Background()

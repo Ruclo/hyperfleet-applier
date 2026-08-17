@@ -331,7 +331,7 @@ func (s *Store) ListApplyDesires(ctx context.Context, managementCluster string) 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []desire.ApplyDesire
+	result := make([]desire.ApplyDesire, 0, len(s.items))
 	for _, rec := range s.items {
 		if rec.Key.ManagementCluster == managementCluster && rec.Apply != nil {
 			result = append(result, s.projectApplyDesire(rec))
@@ -345,7 +345,7 @@ func (s *Store) ListDeleteDesires(ctx context.Context, managementCluster string)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []desire.DeleteDesire
+	result := make([]desire.DeleteDesire, 0, len(s.items))
 	for _, rec := range s.items {
 		if rec.Key.ManagementCluster == managementCluster && rec.Delete {
 			result = append(result, s.projectDeleteDesire(rec))
@@ -359,7 +359,7 @@ func (s *Store) ListReadDesires(ctx context.Context, managementCluster string) (
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []desire.ReadDesire
+	result := make([]desire.ReadDesire, 0, len(s.items))
 	for _, rec := range s.items {
 		if rec.Key.ManagementCluster == managementCluster && rec.Read {
 			result = append(result, s.projectReadDesire(rec))
@@ -480,6 +480,9 @@ func (s *Store) UpdateReadDesireStatus(
 }
 
 func (s *Store) projectApplyDesire(rec *resourceRecord) desire.ApplyDesire {
+	if rec == nil || rec.Apply == nil {
+		return desire.ApplyDesire{}
+	}
 	id := rec.Key.Identity(desire.TypeApply)
 	return desire.ApplyDesire{
 		Identity:   id,

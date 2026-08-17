@@ -22,10 +22,10 @@ func TestCloneApplySpec_IsolatesAndPreservesNil(t *testing.T) {
 }
 
 func TestCloneStatus_IsolatesAndPreservesNil(t *testing.T) {
-	src := desire.Status{Conditions: []metav1.Condition{{Type: "Ready", Reason: "Applied"}}}
+	src := desire.Status{Conditions: []metav1.Condition{{Type: desire.TypeSuccessful, Reason: desire.ReasonApplied}}}
 	cloned := cloneStatus(src)
 	cloned.Conditions[0].Reason = "mutated"
-	if src.Conditions[0].Reason != "Applied" {
+	if src.Conditions[0].Reason != desire.ReasonApplied {
 		t.Fatalf("cloneStatus must not share Conditions backing array")
 	}
 	if cloneStatus(desire.Status{}).Conditions != nil {
@@ -35,13 +35,17 @@ func TestCloneStatus_IsolatesAndPreservesNil(t *testing.T) {
 
 func TestCloneReadStatus_IsolatesAndPreservesNil(t *testing.T) {
 	src := desire.ReadStatus{
-		Status:      desire.Status{Conditions: []metav1.Condition{{Type: "Ready", Reason: "Synced"}}},
+		Status: desire.Status{
+			Conditions: []metav1.Condition{{
+				Type: string(desire.TypeSuccessful), Reason: desire.ReasonSynced,
+			}},
+		},
 		KubeContent: json.RawMessage(`{"v":1}`),
 	}
 	cloned := cloneReadStatus(src)
 	cloned.Conditions[0].Reason = "mutated"
 	cloned.KubeContent[2] = '9'
-	if src.Conditions[0].Reason != "Synced" {
+	if src.Conditions[0].Reason != desire.ReasonSynced {
 		t.Fatalf("cloneReadStatus must not share Conditions backing array")
 	}
 	if string(src.KubeContent) != `{"v":1}` {

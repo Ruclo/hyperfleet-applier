@@ -25,17 +25,16 @@ const (
 	testOwner     = "owner-a"
 )
 
-// newMini creates a Store backed by an in-process miniredis, for tests only.
-// The returned miniredis is owned by the caller and should be deferred Close().
-func newMini() (*Store, *miniredis.Miniredis, error) {
+// newMini creates a Store backed by miniredis. Caller must close client and mr.
+func newMini() (*Store, *redis.Client, *miniredis.Miniredis, error) {
 	mr, err := miniredis.Run()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	client := redis.NewClient(&redis.Options{
 		Addr: mr.Addr(),
 	})
-	return New(client), mr, nil
+	return New(client), client, mr, nil
 }
 
 func testIdentity(typ desire.DesireType, name string) desire.Identity {
@@ -51,32 +50,32 @@ func testIdentity(typ desire.DesireType, name string) desire.Identity {
 
 func TestRedisStore_SpecStoreConformance(t *testing.T) {
 	conformance.RunSpecStoreSuite(t, func(t *testing.T) desire.SpecStore {
-		store, mr, err := newMini()
+		store, client, mr, err := newMini()
 		if err != nil {
 			t.Fatalf("NewMini: %v", err)
 		}
-		t.Cleanup(func() { mr.Close() })
+		t.Cleanup(func() { _ = client.Close(); mr.Close() })
 		return store
 	})
 }
 
 func TestRedisStore_StatusStoreConformance(t *testing.T) {
 	conformance.RunStatusStoreSuite(t, func(t *testing.T) desire.StatusStore {
-		store, mr, err := newMini()
+		store, client, mr, err := newMini()
 		if err != nil {
 			t.Fatalf("NewMini: %v", err)
 		}
-		t.Cleanup(func() { mr.Close() })
+		t.Cleanup(func() { _ = client.Close(); mr.Close() })
 		return store
 	})
 }
 
 func TestUpdateApplyDesireSpec_ConcurrentCAS(t *testing.T) {
-	store, mr, err := newMini()
+	store, client, mr, err := newMini()
 	if err != nil {
 		t.Fatalf("newMini: %v", err)
 	}
-	t.Cleanup(func() { mr.Close() })
+	t.Cleanup(func() { _ = client.Close(); mr.Close() })
 
 	ctx := context.Background()
 	id := testIdentity(desire.TypeApply, "cas-race")
@@ -172,6 +171,7 @@ func TestLoadClusterRecords_UnexpectedValueType(t *testing.T) {
 	}
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
 	store := New(&oddMGetClient{Client: client})
 
 	_, listErr := store.ListApplyDesires(context.Background(), testCluster)
@@ -184,11 +184,11 @@ func TestLoadClusterRecords_UnexpectedValueType(t *testing.T) {
 }
 
 func TestLoadClusterRecords_ScanPagesManyKeys(t *testing.T) {
-	store, mr, err := newMini()
+	store, client, mr, err := newMini()
 	if err != nil {
 		t.Fatalf("newMini: %v", err)
 	}
-	t.Cleanup(func() { mr.Close() })
+	t.Cleanup(func() { _ = client.Close(); mr.Close() })
 
 	ctx := context.Background()
 	n := int(scanCount) + 20 // exceed one SCAN page so paging is exercised
@@ -213,11 +213,11 @@ func TestLoadClusterRecords_ScanPagesManyKeys(t *testing.T) {
 }
 
 func TestCreateReadDesire_AttachesAndIncrementsSharedVersion(t *testing.T) {
-	store, mr, err := newMini()
+	store, client, mr, err := newMini()
 	if err != nil {
 		t.Fatalf("newMini: %v", err)
 	}
-	t.Cleanup(func() { mr.Close() })
+	t.Cleanup(func() { _ = client.Close(); mr.Close() })
 
 	ctx := context.Background()
 	idApply := testIdentity(desire.TypeApply, "shared-read")
@@ -260,11 +260,11 @@ func (c *txFailClient) Watch(ctx context.Context, fn func(*redis.Tx) error, keys
 }
 
 func TestCASMutate_NoopReturnsNilRecord(t *testing.T) {
-	store, mr, err := newMini()
+	store, client, mr, err := newMini()
 	if err != nil {
 		t.Fatalf("newMini: %v", err)
 	}
-	t.Cleanup(func() { mr.Close() })
+	t.Cleanup(func() { _ = client.Close(); mr.Close() })
 
 	rec, casErr := store.casMutate(context.Background(), "cas-noop-key", func(*resourceRecord, bool) error {
 		return errCASNoop
@@ -278,8 +278,6 @@ func TestCASMutate_NoopReturnsNilRecord(t *testing.T) {
 }
 
 func TestProjectDesire_NilRecordIsSafe(t *testing.T) {
-	// casMutate returns (nil, nil) on an errCASNoop mutation; projecting that
-	// nil record must not panic.
 	var s Store
 	if got := s.projectApplyDesire(nil); got.Version != 0 || got.Owner != "" || got.Spec.KubeContent != nil {
 		t.Errorf("projectApplyDesire(nil) = %+v, want zero value", got)
@@ -302,8 +300,10 @@ func TestCASMutate_RetriesTxFailedErrThenSucceeds(t *testing.T) {
 	}
 	t.Cleanup(func() { mr.Close() })
 
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
 	client := &txFailClient{
-		Client: redis.NewClient(&redis.Options{Addr: mr.Addr()}),
+		Client: rdb,
 	}
 	client.remaining.Store(2)
 	store := New(client)
@@ -337,8 +337,10 @@ func TestCASMutate_TxFailedErrExhaustsRetries(t *testing.T) {
 	}
 	t.Cleanup(func() { mr.Close() })
 
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
 	client := &txFailClient{
-		Client: redis.NewClient(&redis.Options{Addr: mr.Addr()}),
+		Client: rdb,
 	}
 	client.remaining.Store(int32(maxCASRetries + 1))
 	store := New(client)
@@ -347,7 +349,7 @@ func TestCASMutate_TxFailedErrExhaustsRetries(t *testing.T) {
 		t.Fatal("mutate must not run when Watch always returns TxFailedErr")
 		return nil
 	})
-	if !errors.Is(casErr, desire.ErrVersionConflict) {
-		t.Fatalf("expected ErrVersionConflict after exhausted TxFailedErr retries, got %v", casErr)
+	if !errors.Is(casErr, desire.ErrAborted) {
+		t.Fatalf("expected ErrAborted after repeated TxFailedErr, got %v", casErr)
 	}
 }

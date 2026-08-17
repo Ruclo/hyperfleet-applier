@@ -17,6 +17,9 @@ var (
 	// ErrVersionConflict is returned when a write or delete includes a stale version.
 	ErrVersionConflict = errors.New("desire: version conflict")
 
+	// ErrAborted is returned when a concurrent mutation prevented the write; refresh and retry.
+	ErrAborted = errors.New("desire: aborted")
+
 	// ErrOwnerConflict is returned when a write or delete is attempted by a different owner.
 	ErrOwnerConflict = errors.New("desire: owner conflict")
 

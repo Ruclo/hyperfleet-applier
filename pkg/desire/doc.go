@@ -7,9 +7,8 @@
 //   - DeleteDesire: make a resource not exist (confirmed gone past finalizers)
 //   - ReadDesire: mirror a live object's state back to the control plane
 //
-// Each desire targets exactly one Kubernetes resource instance, identified by an
-// Identity tuple (partition, type, group, resource, namespace, name). No lists, no
-// label selectors, no bulk ops - so status reasoning stays simple.
+// Each desire targets one Kubernetes resource (Identity). The store also
+// supports listing and prefix delete (ListApplyDesires, DeleteByPrefix).
 //
 // Behavioral semantics are aligned with the ARO-HCP kube-applier specification.
 //

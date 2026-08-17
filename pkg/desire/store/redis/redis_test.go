@@ -191,7 +191,7 @@ func TestLoadClusterRecords_ScanPagesManyKeys(t *testing.T) {
 	t.Cleanup(func() { mr.Close() })
 
 	ctx := context.Background()
-	const n = 120 // > scanCount (100) so SCAN must page
+	n := int(scanCount) + 20 // exceed one SCAN page so paging is exercised
 	for i := 0; i < n; i++ {
 		id := testIdentity(desire.TypeApply, fmt.Sprintf("cm-%03d", i))
 		if _, createErr := store.CreateApplyDesire(ctx, desire.ApplyDesire{
@@ -274,6 +274,24 @@ func TestCASMutate_NoopReturnsNilRecord(t *testing.T) {
 	}
 	if rec != nil {
 		t.Fatalf("casMutate: expected nil record on noop, got %+v", rec)
+	}
+}
+
+func TestProjectDesire_NilRecordIsSafe(t *testing.T) {
+	// casMutate returns (nil, nil) on an errCASNoop mutation; projecting that
+	// nil record must not panic.
+	var s Store
+	if got := s.projectApplyDesire(nil); got.Version != 0 || got.Owner != "" || got.Spec.KubeContent != nil {
+		t.Errorf("projectApplyDesire(nil) = %+v, want zero value", got)
+	}
+	if got := s.projectApplyDesire(&resourceRecord{}); got.Version != 0 || got.Spec.KubeContent != nil {
+		t.Errorf("projectApplyDesire(nil Apply) = %+v, want zero value", got)
+	}
+	if got := s.projectDeleteDesire(nil); got.Version != 0 || got.Owner != "" {
+		t.Errorf("projectDeleteDesire(nil) = %+v, want zero value", got)
+	}
+	if got := s.projectReadDesire(nil); got.Version != 0 || got.Owner != "" {
+		t.Errorf("projectReadDesire(nil) = %+v, want zero value", got)
 	}
 }
 

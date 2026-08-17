@@ -32,3 +32,27 @@ func TestCloneStatus_IsolatesAndPreservesNil(t *testing.T) {
 		t.Fatalf("cloneStatus must preserve nil Conditions")
 	}
 }
+
+func TestCloneReadStatus_IsolatesAndPreservesNil(t *testing.T) {
+	src := desire.ReadStatus{
+		Status:      desire.Status{Conditions: []metav1.Condition{{Type: "Ready", Reason: "Synced"}}},
+		KubeContent: json.RawMessage(`{"v":1}`),
+	}
+	cloned := cloneReadStatus(src)
+	cloned.Conditions[0].Reason = "mutated"
+	cloned.KubeContent[2] = '9'
+	if src.Conditions[0].Reason != "Synced" {
+		t.Fatalf("cloneReadStatus must not share Conditions backing array")
+	}
+	if string(src.KubeContent) != `{"v":1}` {
+		t.Fatalf("cloneReadStatus must not share KubeContent backing array")
+	}
+
+	empty := cloneReadStatus(desire.ReadStatus{})
+	if empty.Conditions != nil {
+		t.Fatalf("cloneReadStatus must preserve nil Conditions")
+	}
+	if empty.KubeContent != nil {
+		t.Fatalf("cloneReadStatus must preserve nil KubeContent")
+	}
+}

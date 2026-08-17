@@ -161,6 +161,13 @@ func TestApplySpecValidate_RejectsEmptyKubeContent(t *testing.T) {
 	}
 }
 
+func TestApplySpecValidate_RejectsMalformedJSON(t *testing.T) {
+	spec := desire.ApplySpec{KubeContent: []byte(`{`)}
+	if err := spec.Validate(); err == nil {
+		t.Errorf("expected ApplySpec.Validate to reject non-empty invalid JSON")
+	}
+}
+
 func TestApplyDesireValidate_RejectsWrongIdentityType(t *testing.T) {
 	id := validIdentity()
 	id.Type = desire.TypeDelete

@@ -14,6 +14,10 @@ import (
 // maxCASRetries bounds WATCH/MULTI retries when a watched key changes underfoot.
 const maxCASRetries = 16
 
+// scanCount is the COUNT hint passed to Redis SCAN, bounding the keys returned
+// per page.
+const scanCount int64 = 100
+
 // errCASNoop aborts a WATCH callback without writing (no matching mutation).
 var errCASNoop = errors.New("desire: cas noop")
 
@@ -74,6 +78,10 @@ func (s *Store) loadRecord(ctx context.Context, key string) (*resourceRecord, er
 // current record (zero value when the key is absent) and must return a typed
 // desire error to abort without writing. On TxFailedErr the whole attempt is
 // retried; exhausting retries yields ErrVersionConflict.
+//
+// Returning errCASNoop from mutate aborts without writing and yields
+// (nil, nil): no record and no error. Callers that project the result must
+// treat a nil record as "no write happened"; the project* helpers are nil-safe.
 func (s *Store) casMutate(
 	ctx context.Context, key string, mutate func(rec *resourceRecord, exists bool) error,
 ) (*resourceRecord, error) {
@@ -480,7 +488,6 @@ func (s *Store) loadClusterRecords(ctx context.Context, managementCluster string
 // scanKeys collects unique Redis keys matching pattern using incremental SCAN.
 // SCAN may emit the same key more than once; duplicates are dropped.
 func (s *Store) scanKeys(ctx context.Context, pattern string) ([]string, error) {
-	const scanCount int64 = 100
 	var (
 		cursor uint64
 		keys   []string
@@ -681,6 +688,9 @@ func (s *Store) UpdateReadDesireStatus(
 // Helper methods to project records into public types.
 
 func (s *Store) projectApplyDesire(rec *resourceRecord) desire.ApplyDesire {
+	if rec == nil || rec.Apply == nil {
+		return desire.ApplyDesire{}
+	}
 	id := rec.Key.Identity(desire.TypeApply)
 	spec := *rec.Apply
 	status := desire.Status{}
@@ -698,6 +708,9 @@ func (s *Store) projectApplyDesire(rec *resourceRecord) desire.ApplyDesire {
 }
 
 func (s *Store) projectDeleteDesire(rec *resourceRecord) desire.DeleteDesire {
+	if rec == nil {
+		return desire.DeleteDesire{}
+	}
 	id := rec.Key.Identity(desire.TypeDelete)
 	status := desire.Status{}
 	if rec.DeleteStatus != nil {
@@ -713,6 +726,9 @@ func (s *Store) projectDeleteDesire(rec *resourceRecord) desire.DeleteDesire {
 }
 
 func (s *Store) projectReadDesire(rec *resourceRecord) desire.ReadDesire {
+	if rec == nil {
+		return desire.ReadDesire{}
+	}
 	id := rec.Key.Identity(desire.TypeRead)
 	status := desire.ReadStatus{Status: desire.Status{}}
 	if rec.ReadStatus != nil {

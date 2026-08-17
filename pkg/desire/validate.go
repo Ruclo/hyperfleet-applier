@@ -1,6 +1,7 @@
 package desire
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -83,6 +84,9 @@ func validateDNS1123Subdomain(field string, value string, required bool) error {
 func (s ApplySpec) Validate() error {
 	if len(s.KubeContent) == 0 {
 		return errors.New("ApplySpec.KubeContent must not be empty")
+	}
+	if !json.Valid(s.KubeContent) {
+		return errors.New("ApplySpec.KubeContent must be valid JSON")
 	}
 	return nil
 }

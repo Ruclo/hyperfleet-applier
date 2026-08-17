@@ -318,6 +318,36 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 				t.Fatalf("expected ErrNotFound after delete, got %v", err)
 			}
 		})
+
+		t.Run("DeleteStaleVersionRejected", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeDelete, "del-stale")
+
+			created, err := store.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA))
+			if err != nil {
+				t.Fatalf("CreateDeleteDesire: %v", err)
+			}
+			if err := store.DeleteDeleteDesire(ctx, id, ownerA, created.Version+1); !errors.Is(
+				err, desire.ErrVersionConflict,
+			) {
+				t.Fatalf("expected ErrVersionConflict for stale version, got %v", err)
+			}
+		})
+
+		t.Run("DeleteForeignOwnerRejected", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeDelete, "del-owner")
+
+			created, err := store.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA))
+			if err != nil {
+				t.Fatalf("CreateDeleteDesire: %v", err)
+			}
+			if err := store.DeleteDeleteDesire(ctx, id, "owner-b", created.Version); !errors.Is(
+				err, desire.ErrOwnerConflict,
+			) {
+				t.Fatalf("expected ErrOwnerConflict for foreign owner, got %v", err)
+			}
+		})
 	})
 
 	t.Run("ReadDesire", func(t *testing.T) {
@@ -355,6 +385,36 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 			if _, err := store.GetReadDesire(ctx, id); !errors.Is(err, desire.ErrNotFound) {
 				t.Fatalf("expected ErrNotFound after delete, got %v", err)
+			}
+		})
+
+		t.Run("DeleteStaleVersionRejected", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeRead, "read-stale")
+
+			created, err := store.CreateReadDesire(ctx, newReadDesire(id, ownerA))
+			if err != nil {
+				t.Fatalf("CreateReadDesire: %v", err)
+			}
+			if err := store.DeleteReadDesire(ctx, id, ownerA, created.Version+1); !errors.Is(
+				err, desire.ErrVersionConflict,
+			) {
+				t.Fatalf("expected ErrVersionConflict for stale version, got %v", err)
+			}
+		})
+
+		t.Run("DeleteForeignOwnerRejected", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeRead, "read-owner")
+
+			created, err := store.CreateReadDesire(ctx, newReadDesire(id, ownerA))
+			if err != nil {
+				t.Fatalf("CreateReadDesire: %v", err)
+			}
+			if err := store.DeleteReadDesire(ctx, id, "owner-b", created.Version); !errors.Is(
+				err, desire.ErrOwnerConflict,
+			) {
+				t.Fatalf("expected ErrOwnerConflict for foreign owner, got %v", err)
 			}
 		})
 	})

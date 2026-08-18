@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	resourceConfigMaps = "configmaps"
-	ownerA             = "owner-a"
-	kubeContentV1      = `{"v":1}`
-	kubeContentV2      = `{"v":2}`
+	resourceConfigMaps   = "configmaps"
+	ownerA               = "owner-a"
+	kubeContentV1        = `{"v":1}`
+	kubeContentV2        = `{"v":2}`
+	mutatedStatusMessage = "mutated"
 )
 
 func identity(managementCluster string, typ desire.DesireType, name string) desire.Identity {
@@ -54,10 +55,10 @@ func newReadDesire(id desire.Identity, owner string) desire.ReadDesire {
 	}
 }
 
-func condition(typ desire.DesireType, reason string) metav1.Condition { //nolint:unparam
+func condition(reason string, status metav1.ConditionStatus) metav1.Condition {
 	return metav1.Condition{
-		Type:               string(typ),
-		Status:             metav1.ConditionTrue,
+		Type:               desire.TypeSuccessful,
+		Status:             status,
 		Reason:             reason,
 		Message:            reason,
 		LastTransitionTime: metav1.Now(),
@@ -195,8 +196,8 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 			withStatus, err := statusStore.UpdateApplyDesireStatus(
 				ctx, idApply,
-				desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)}},
-				created.Version+1, // bumped by CreateReadDesire
+				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)}},
+				created.Version+1, // CreateReadDesire incremented Version on the shared resource record
 			)
 			if err != nil {
 				t.Fatalf("UpdateApplyDesireStatus: %v", err)
@@ -244,6 +245,90 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 					"expected Version to strictly increase after successful update, got %d -> %d",
 					created.Version, updated.Version,
 				)
+			}
+		})
+
+		t.Run("UpdateSpecClearsStatus", func(t *testing.T) {
+			store := newStore(t)
+			statusStore, ok := store.(desire.StatusStore)
+			if !ok {
+				t.Fatalf("store must also implement desire.StatusStore")
+			}
+			id := identity("cluster-a", desire.TypeApply, "status-clear-on-update")
+
+			created, err := store.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, `{"v":1}`))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+			withStatus, err := statusStore.UpdateApplyDesireStatus(
+				ctx, id,
+				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)}},
+				created.Version,
+			)
+			if err != nil {
+				t.Fatalf("UpdateApplyDesireStatus: %v", err)
+			}
+
+			updated, err := store.UpdateApplyDesireSpec(
+				ctx, id, desire.ApplySpec{KubeContent: json.RawMessage(kubeContentV2)}, ownerA, withStatus.Version,
+			)
+			if err != nil {
+				t.Fatalf("UpdateApplyDesireSpec: %v", err)
+			}
+			if len(updated.Status.Conditions) != 0 {
+				t.Fatalf(
+					"expected status cleared after spec update, got %+v", updated.Status.Conditions,
+				)
+			}
+		})
+
+		t.Run("UpdateSpecReturnedValueIsIsolatedFromCallerMutation", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeApply, "update-clone-returned")
+
+			created, err := store.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, kubeContentV1))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+
+			updated, err := store.UpdateApplyDesireSpec(
+				ctx, id, desire.ApplySpec{KubeContent: json.RawMessage(kubeContentV2)}, ownerA, created.Version,
+			)
+			if err != nil {
+				t.Fatalf("UpdateApplyDesireSpec: %v", err)
+			}
+
+			updated.Spec.KubeContent[2] = '9'
+			got, err := store.GetApplyDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetApplyDesire: %v", err)
+			}
+			if string(got.Spec.KubeContent) != kubeContentV2 {
+				t.Fatalf("expected store to retain updated KubeContent, got %q", got.Spec.KubeContent)
+			}
+		})
+
+		t.Run("UpdateSpecInputIsIsolatedFromCallerMutation", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeApply, "update-clone-input")
+
+			created, err := store.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, kubeContentV1))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+
+			spec := desire.ApplySpec{KubeContent: json.RawMessage(kubeContentV2)}
+			if _, updateErr := store.UpdateApplyDesireSpec(ctx, id, spec, ownerA, created.Version); updateErr != nil {
+				t.Fatalf("UpdateApplyDesireSpec: %v", updateErr)
+			}
+
+			spec.KubeContent[2] = '9'
+			got, err := store.GetApplyDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetApplyDesire: %v", err)
+			}
+			if string(got.Spec.KubeContent) != kubeContentV2 {
+				t.Fatalf("expected store to retain updated KubeContent after input mutation, got %q", got.Spec.KubeContent)
 			}
 		})
 
@@ -782,7 +867,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 
 			updated, err := store.UpdateApplyDesireStatus(
 				ctx, id,
-				desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)}},
+				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)}},
 				created.Version,
 			)
 			if err != nil {
@@ -796,7 +881,61 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 		})
 
-		t.Run("SpecAndStatusWritesAreIsolated", func(t *testing.T) {
+		t.Run("UpdateStatusReturnedValueIsIsolatedFromCallerMutation", func(t *testing.T) {
+			store := newStore(t)
+			spec := seedSpecStore(t, store)
+			id := identity("cluster-a", desire.TypeApply, "status-clone-returned")
+
+			created, err := spec.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, `{}`))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+
+			updated, err := store.UpdateApplyDesireStatus(
+				ctx, id,
+				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)}},
+				created.Version,
+			)
+			if err != nil {
+				t.Fatalf("UpdateApplyDesireStatus: %v", err)
+			}
+
+			updated.Status.Conditions[0].Message = mutatedStatusMessage
+			got, err := store.GetApplyDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetApplyDesire: %v", err)
+			}
+			if got.Status.Conditions[0].Message != desire.ReasonApplied {
+				t.Fatalf("expected store to retain original status message, got %q", got.Status.Conditions[0].Message)
+			}
+		})
+
+		t.Run("UpdateStatusInputIsIsolatedFromCallerMutation", func(t *testing.T) {
+			store := newStore(t)
+			spec := seedSpecStore(t, store)
+			id := identity("cluster-a", desire.TypeApply, "status-clone-input")
+
+			created, err := spec.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, `{}`))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+
+			status := desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)}}
+			if _, updateErr := store.UpdateApplyDesireStatus(ctx, id, status, created.Version); updateErr != nil {
+				t.Fatalf("UpdateApplyDesireStatus: %v", updateErr)
+			}
+
+			status.Conditions[0].Message = mutatedStatusMessage
+			got, err := store.GetApplyDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetApplyDesire: %v", err)
+			}
+			if got.Status.Conditions[0].Message != desire.ReasonApplied {
+				t.Fatalf("expected store to retain original status after input mutation, got %q", got.Status.Conditions[0].Message)
+			}
+		})
+
+		t.Run("StatusWriteDoesNotChangeSpec", func(t *testing.T) {
 			store := newStore(t)
 			spec := seedSpecStore(t, store)
 			id := identity("cluster-a", desire.TypeApply, "cm-3")
@@ -808,7 +947,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 
 			afterStatus, err := store.UpdateApplyDesireStatus(
 				ctx, id,
-				desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)}},
+				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)}},
 				created.Version,
 			)
 			if err != nil {
@@ -817,16 +956,9 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			if string(afterStatus.Spec.KubeContent) != `{"v":1}` {
 				t.Errorf("UpdateApplyDesireStatus must not change Spec, got %q", afterStatus.Spec.KubeContent)
 			}
-
-			afterSpec, err := spec.UpdateApplyDesireSpec(
-				ctx, id, desire.ApplySpec{KubeContent: json.RawMessage(kubeContentV2)}, ownerA, afterStatus.Version,
-			)
-			if err != nil {
-				t.Fatalf("UpdateApplyDesireSpec: %v", err)
-			}
-			if len(afterSpec.Status.Conditions) != 1 || afterSpec.Status.Conditions[0].Reason != desire.ReasonApplied {
-				t.Errorf("UpdateApplyDesireSpec must not change Status, got %+v", afterSpec.Status.Conditions)
-			}
+			// The reverse direction is intentionally not isolated:
+			// UpdateApplyDesireSpec clears the status (see UpdateSpecClearsStatus),
+			// since the old status described a spec that is no longer desired.
 		})
 	})
 
@@ -851,7 +983,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 
 			status := desire.Status{Conditions: []metav1.Condition{
-				condition(desire.TypeSuccessful, desire.ReasonWaitingForDeletion),
+				condition(desire.ReasonWaitingForDeletion, metav1.ConditionFalse),
 			}}
 			updated, err := store.UpdateDeleteDesireStatus(ctx, id, status, created.Version)
 			if err != nil {
@@ -873,6 +1005,34 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 		})
 
+		t.Run("UpdateStatusReturnedValueIsIsolatedFromCallerMutation", func(t *testing.T) {
+			store := newStore(t)
+			spec := seedSpecStore(t, store)
+			id := identity("cluster-a", desire.TypeDelete, "del-status-clone-returned")
+
+			created, err := spec.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA))
+			if err != nil {
+				t.Fatalf("CreateDeleteDesire: %v", err)
+			}
+
+			status := desire.Status{Conditions: []metav1.Condition{
+				condition(desire.ReasonWaitingForDeletion, metav1.ConditionFalse),
+			}}
+			updated, err := store.UpdateDeleteDesireStatus(ctx, id, status, created.Version)
+			if err != nil {
+				t.Fatalf("UpdateDeleteDesireStatus: %v", err)
+			}
+
+			updated.Status.Conditions[0].Message = mutatedStatusMessage
+			got, err := store.GetDeleteDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetDeleteDesire: %v", err)
+			}
+			if got.Status.Conditions[0].Message != desire.ReasonWaitingForDeletion {
+				t.Fatalf("expected store to retain original delete status message, got %q", got.Status.Conditions[0].Message)
+			}
+		})
+
 		t.Run("StaleVersionRejected", func(t *testing.T) {
 			store := newStore(t)
 			spec := seedSpecStore(t, store)
@@ -884,7 +1044,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 
 			status := desire.Status{Conditions: []metav1.Condition{
-				condition(desire.TypeSuccessful, desire.ReasonWaitingForDeletion),
+				condition(desire.ReasonWaitingForDeletion, metav1.ConditionFalse),
 			}}
 			if _, updateErr := store.UpdateDeleteDesireStatus(ctx, id, status, created.Version); updateErr != nil {
 				t.Fatalf("UpdateDeleteDesireStatus: %v", updateErr)
@@ -911,7 +1071,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			id := identity("cluster-a", desire.TypeRead, "missing")
 
 			status := desire.ReadStatus{
-				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonSynced, metav1.ConditionTrue)}},
 			}
 			if _, err := store.UpdateReadDesireStatus(ctx, id, status); !errors.Is(err, desire.ErrNotFound) {
 				t.Fatalf("expected ErrNotFound, got %v", err)
@@ -928,7 +1088,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 
 			status := desire.ReadStatus{
-				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonSynced, metav1.ConditionTrue)}},
 			}
 			if _, err := store.UpdateReadDesireStatus(ctx, id, status); err != nil {
 				t.Fatalf("UpdateReadDesireStatus: %v", err)
@@ -945,7 +1105,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 
 			status := desire.ReadStatus{
-				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonSynced, metav1.ConditionTrue)}},
 			}
 			for i := range 5 {
 				if _, err := store.UpdateReadDesireStatus(ctx, id, status); err != nil {
@@ -956,7 +1116,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 
 		t.Run("DoesNotAdvanceVersionApplyOrDeleteCASDependsOn", func(t *testing.T) {
 			readStatus := desire.ReadStatus{
-				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonSynced, metav1.ConditionTrue)}},
 			}
 
 			t.Run("Apply", func(t *testing.T) {
@@ -980,7 +1140,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				}
 
 				applyStatus := desire.Status{
-					Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)},
+					Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)},
 				}
 				if _, err := store.UpdateApplyDesireStatus(ctx, id, applyStatus, createdRead.Version); err != nil {
 					t.Fatalf("UpdateApplyDesireStatus with pre-Read-status version failed: %v", err)
@@ -1008,12 +1168,45 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				}
 
 				deleteStatus := desire.Status{
-					Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonWaitingForDeletion)},
+					Conditions: []metav1.Condition{condition(desire.ReasonWaitingForDeletion, metav1.ConditionFalse)},
 				}
 				if _, err := store.UpdateDeleteDesireStatus(ctx, id, deleteStatus, createdRead.Version); err != nil {
 					t.Fatalf("UpdateDeleteDesireStatus with pre-Read-status version failed: %v", err)
 				}
 			})
+		})
+
+		t.Run("UpdateStatusReturnedValueIsIsolatedFromCallerMutation", func(t *testing.T) {
+			store := newStore(t)
+			spec := seedSpecStore(t, store)
+			id := identity("cluster-a", desire.TypeRead, "read-status-clone-returned")
+
+			if _, err := spec.CreateReadDesire(ctx, newReadDesire(id, ownerA)); err != nil {
+				t.Fatalf("CreateReadDesire: %v", err)
+			}
+
+			content := json.RawMessage(`{"kind":"ConfigMap","data":{"k":"v"}}`)
+			status := desire.ReadStatus{
+				Status:      desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonSynced, metav1.ConditionTrue)}},
+				KubeContent: content,
+			}
+			updated, err := store.UpdateReadDesireStatus(ctx, id, status)
+			if err != nil {
+				t.Fatalf("UpdateReadDesireStatus: %v", err)
+			}
+
+			updated.Status.KubeContent[2] = '9'
+			updated.Status.Conditions[0].Message = mutatedStatusMessage
+			got, err := store.GetReadDesire(ctx, id)
+			if err != nil {
+				t.Fatalf("GetReadDesire: %v", err)
+			}
+			if string(got.Status.KubeContent) != string(content) {
+				t.Fatalf("expected store to retain original KubeContent, got %q", got.Status.KubeContent)
+			}
+			if got.Status.Conditions[0].Message != desire.ReasonSynced {
+				t.Fatalf("expected store to retain original status message, got %q", got.Status.Conditions[0].Message)
+			}
 		})
 
 		t.Run("KubeContentMirror", func(t *testing.T) {
@@ -1031,7 +1224,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 
 			content := json.RawMessage(`{"kind":"ConfigMap","data":{"k":"v"}}`)
 			readStatus := desire.ReadStatus{
-				Status:      desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+				Status:      desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonSynced, metav1.ConditionTrue)}},
 				KubeContent: content,
 			}
 			updated, err := store.UpdateReadDesireStatus(ctx, id, readStatus)

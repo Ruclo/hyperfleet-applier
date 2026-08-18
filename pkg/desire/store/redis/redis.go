@@ -28,17 +28,18 @@ type Client interface {
 	Watch(ctx context.Context, fn func(*redis.Tx) error, keys ...string) error
 }
 
-// resourceRecord mirrors the record structure for JSON serialization.
+// resourceRecord is the JSON-serialized record. A nil Apply marks the absence
+// of the apply sub-state; Delete and Read track their own. Statuses are values.
 type resourceRecord struct {
 	Apply            *desire.ApplySpec  `json:"apply,omitempty"`
-	ApplyStatus      *desire.Status     `json:"applyStatus,omitempty"`
-	DeleteStatus     *desire.Status     `json:"deleteStatus,omitempty"`
-	ReadStatus       *desire.ReadStatus `json:"readStatus,omitempty"`
 	Key              desire.ResourceKey `json:"key"`
 	ApplyResourceID  string             `json:"applyResourceId,omitempty"`
 	DeleteResourceID string             `json:"deleteResourceId,omitempty"`
 	ReadResourceID   string             `json:"readResourceId,omitempty"`
 	Owner            string             `json:"owner"`
+	ReadStatus       desire.ReadStatus  `json:"readStatus"`
+	ApplyStatus      desire.Status      `json:"applyStatus"`
+	DeleteStatus     desire.Status      `json:"deleteStatus"`
 	Version          int64              `json:"version"`
 	Delete           bool               `json:"delete,omitempty"`
 	Read             bool               `json:"read,omitempty"`
@@ -133,18 +134,6 @@ func (s *Store) casMutate(
 	return nil, desire.ErrAborted
 }
 
-// newApplyRecord builds a fresh record for a new ApplyDesire.
-func newApplyRecord(rk desire.ResourceKey, owner string, spec desire.ApplySpec, resourceID string) *resourceRecord {
-	return &resourceRecord{
-		Key:             rk,
-		Owner:           owner,
-		Version:         1,
-		Apply:           &spec,
-		ApplyResourceID: resourceID,
-		ApplyStatus:     &desire.Status{},
-	}
-}
-
 // CreateApplyDesire creates a new ApplyDesire.
 func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (desire.ApplyDesire, error) {
 	if err := d.Validate(); err != nil {
@@ -155,23 +144,24 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 	key := rk.String()
 
 	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if !exists {
-			*rec = *newApplyRecord(rk, d.Owner, d.Spec, d.ResourceID)
-			return nil
-		}
-		if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
-			return err
-		}
-		if rec.Delete {
-			return desire.ErrDeletePending
-		}
-		if rec.Apply != nil {
-			return desire.ErrAlreadyExists
+		if exists {
+			if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
+				return fmt.Errorf("desire: create apply desire %s: %w", rk, err)
+			}
+			if rec.Delete {
+				return desire.ErrDeletePending
+			}
+			if rec.Apply != nil {
+				return desire.ErrAlreadyExists
+			}
+		} else {
+			rec.Key = rk
+			rec.Owner = d.Owner
 		}
 		spec := d.Spec
 		rec.Apply = &spec
 		rec.ApplyResourceID = d.ResourceID
-		rec.ApplyStatus = &desire.Status{}
+		rec.ApplyStatus = desire.Status{}
 		rec.Version++
 		return nil
 	})
@@ -217,9 +207,14 @@ func (s *Store) UpdateApplyDesireSpec(
 			return desire.ErrVersionConflict
 		}
 		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return err
+			return fmt.Errorf("desire: update apply desire spec %s: %w", rk, err)
 		}
 		rec.Apply = &spec
+		// Clear the status: it described the previous spec, which is no longer
+		// the desired state. Retaining a stale Successful=True would report the
+		// new, unreconciled spec as already achieved. Matches Create/Delete,
+		// which also reset ApplyStatus.
+		rec.ApplyStatus = desire.Status{}
 		rec.Version++
 		return nil
 	})
@@ -242,27 +237,15 @@ func (s *Store) DeleteApplyDesire(ctx context.Context, id desire.Identity, owner
 			return desire.ErrVersionConflict
 		}
 		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return err
+			return fmt.Errorf("desire: delete apply desire %s: %w", rk, err)
 		}
 		rec.Apply = nil
 		rec.ApplyResourceID = ""
-		rec.ApplyStatus = nil
+		rec.ApplyStatus = desire.Status{}
 		rec.Version++
 		return nil
 	})
 	return err
-}
-
-// newDeleteRecord builds a fresh record for a new DeleteDesire.
-func newDeleteRecord(rk desire.ResourceKey, owner string, resourceID string) *resourceRecord {
-	return &resourceRecord{
-		Key:              rk,
-		Owner:            owner,
-		Version:          1,
-		Delete:           true,
-		DeleteResourceID: resourceID,
-		DeleteStatus:     &desire.Status{},
-	}
 }
 
 // CreateDeleteDesire creates a new DeleteDesire.
@@ -275,23 +258,24 @@ func (s *Store) CreateDeleteDesire(ctx context.Context, d desire.DeleteDesire) (
 	key := rk.String()
 
 	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if !exists {
-			*rec = *newDeleteRecord(rk, d.Owner, d.ResourceID)
-			return nil
-		}
-		if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
-			return err
-		}
-		if rec.Delete {
-			return desire.ErrAlreadyExists
+		if exists {
+			if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
+				return fmt.Errorf("desire: create delete desire %s: %w", rk, err)
+			}
+			if rec.Delete {
+				return desire.ErrAlreadyExists
+			}
+		} else {
+			rec.Key = rk
+			rec.Owner = d.Owner
 		}
 		// Delete supersedes an existing Apply.
 		rec.Apply = nil
 		rec.ApplyResourceID = ""
-		rec.ApplyStatus = nil
+		rec.ApplyStatus = desire.Status{}
 		rec.Delete = true
 		rec.DeleteResourceID = d.ResourceID
-		rec.DeleteStatus = &desire.Status{}
+		rec.DeleteStatus = desire.Status{}
 		rec.Version++
 		return nil
 	})
@@ -331,27 +315,15 @@ func (s *Store) DeleteDeleteDesire(ctx context.Context, id desire.Identity, owne
 			return desire.ErrVersionConflict
 		}
 		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return err
+			return fmt.Errorf("desire: delete delete desire %s: %w", rk, err)
 		}
 		rec.Delete = false
 		rec.DeleteResourceID = ""
-		rec.DeleteStatus = nil
+		rec.DeleteStatus = desire.Status{}
 		rec.Version++
 		return nil
 	})
 	return err
-}
-
-// newReadRecord builds a fresh record for a new ReadDesire.
-func newReadRecord(rk desire.ResourceKey, owner string, resourceID string) *resourceRecord {
-	return &resourceRecord{
-		Key:            rk,
-		Owner:          owner,
-		Version:        1,
-		Read:           true,
-		ReadResourceID: resourceID,
-		ReadStatus:     &desire.ReadStatus{Status: desire.Status{}},
-	}
 }
 
 // CreateReadDesire creates a new ReadDesire.
@@ -364,19 +336,20 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 	key := rk.String()
 
 	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if !exists {
-			*rec = *newReadRecord(rk, d.Owner, d.ResourceID)
-			return nil
-		}
-		if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
-			return err
-		}
-		if rec.Read {
-			return desire.ErrAlreadyExists
+		if exists {
+			if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
+				return fmt.Errorf("desire: create read desire %s: %w", rk, err)
+			}
+			if rec.Read {
+				return desire.ErrAlreadyExists
+			}
+		} else {
+			rec.Key = rk
+			rec.Owner = d.Owner
 		}
 		rec.Read = true
 		rec.ReadResourceID = d.ResourceID
-		rec.ReadStatus = &desire.ReadStatus{Status: desire.Status{}}
+		rec.ReadStatus = desire.ReadStatus{}
 		rec.Version++
 		return nil
 	})
@@ -416,11 +389,11 @@ func (s *Store) DeleteReadDesire(ctx context.Context, id desire.Identity, owner 
 			return desire.ErrVersionConflict
 		}
 		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return err
+			return fmt.Errorf("desire: delete read desire %s: %w", rk, err)
 		}
 		rec.Read = false
 		rec.ReadResourceID = ""
-		rec.ReadStatus = nil
+		rec.ReadStatus = desire.ReadStatus{}
 		rec.Version++
 		return nil
 	})
@@ -445,13 +418,10 @@ func (s *Store) loadClusterRecords(ctx context.Context, managementCluster string
 		return nil, nil
 	}
 
-	values := make([]interface{}, len(keys))
+	values := make([]any, len(keys))
 	const mgetBatch = 1000
 	for start := 0; start < len(keys); start += mgetBatch {
-		end := start + mgetBatch
-		if end > len(keys) {
-			end = len(keys)
-		}
+		end := min(start+mgetBatch, len(keys))
 		batch, err := s.client.MGet(ctx, keys[start:end]...).Result()
 		if err != nil {
 			return nil, fmt.Errorf("desire: mget: %w", err)
@@ -578,19 +548,19 @@ func (s *Store) DeleteByPrefix(ctx context.Context, managementCluster string, se
 			if rec.Apply != nil && sel.Matches(rec.Key.Identity(desire.TypeApply)) {
 				rec.Apply = nil
 				rec.ApplyResourceID = ""
-				rec.ApplyStatus = nil
+				rec.ApplyStatus = desire.Status{}
 				modified = true
 			}
 			if rec.Delete && sel.Matches(rec.Key.Identity(desire.TypeDelete)) {
 				rec.Delete = false
 				rec.DeleteResourceID = ""
-				rec.DeleteStatus = nil
+				rec.DeleteStatus = desire.Status{}
 				modified = true
 			}
 			if rec.Read && sel.Matches(rec.Key.Identity(desire.TypeRead)) {
 				rec.Read = false
 				rec.ReadResourceID = ""
-				rec.ReadStatus = nil
+				rec.ReadStatus = desire.ReadStatus{}
 				modified = true
 			}
 			if !modified {
@@ -620,7 +590,7 @@ func (s *Store) UpdateApplyDesireStatus(
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		rec.ApplyStatus = &status
+		rec.ApplyStatus = desire.CloneStatus(status)
 		rec.Version++
 		return nil
 	})
@@ -644,7 +614,7 @@ func (s *Store) UpdateDeleteDesireStatus(
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		rec.DeleteStatus = &status
+		rec.DeleteStatus = desire.CloneStatus(status)
 		rec.Version++
 		return nil
 	})
@@ -665,7 +635,7 @@ func (s *Store) UpdateReadDesireStatus(
 		if !exists || !rec.Read {
 			return desire.ErrNotFound
 		}
-		rec.ReadStatus = &status
+		rec.ReadStatus = desire.CloneReadStatus(status)
 		return nil
 	})
 	if err != nil {
@@ -680,19 +650,13 @@ func (s *Store) projectApplyDesire(rec *resourceRecord) desire.ApplyDesire {
 	if rec == nil || rec.Apply == nil {
 		return desire.ApplyDesire{}
 	}
-	id := rec.Key.Identity(desire.TypeApply)
-	spec := *rec.Apply
-	status := desire.Status{}
-	if rec.ApplyStatus != nil {
-		status = *rec.ApplyStatus
-	}
 	return desire.ApplyDesire{
-		Identity:   id,
+		Identity:   rec.Key.Identity(desire.TypeApply),
 		Owner:      rec.Owner,
 		ResourceID: rec.ApplyResourceID,
 		Version:    rec.Version,
-		Spec:       spec,
-		Status:     status,
+		Spec:       desire.CloneApplySpec(*rec.Apply),
+		Status:     desire.CloneStatus(rec.ApplyStatus),
 	}
 }
 
@@ -700,17 +664,12 @@ func (s *Store) projectDeleteDesire(rec *resourceRecord) desire.DeleteDesire {
 	if rec == nil {
 		return desire.DeleteDesire{}
 	}
-	id := rec.Key.Identity(desire.TypeDelete)
-	status := desire.Status{}
-	if rec.DeleteStatus != nil {
-		status = *rec.DeleteStatus
-	}
 	return desire.DeleteDesire{
-		Identity:   id,
+		Identity:   rec.Key.Identity(desire.TypeDelete),
 		Owner:      rec.Owner,
 		ResourceID: rec.DeleteResourceID,
 		Version:    rec.Version,
-		Status:     status,
+		Status:     desire.CloneStatus(rec.DeleteStatus),
 	}
 }
 
@@ -718,17 +677,12 @@ func (s *Store) projectReadDesire(rec *resourceRecord) desire.ReadDesire {
 	if rec == nil {
 		return desire.ReadDesire{}
 	}
-	id := rec.Key.Identity(desire.TypeRead)
-	status := desire.ReadStatus{Status: desire.Status{}}
-	if rec.ReadStatus != nil {
-		status = *rec.ReadStatus
-	}
 	return desire.ReadDesire{
-		Identity:   id,
+		Identity:   rec.Key.Identity(desire.TypeRead),
 		Owner:      rec.Owner,
 		ResourceID: rec.ReadResourceID,
 		Version:    rec.Version,
-		Status:     status,
+		Status:     desire.CloneReadStatus(rec.ReadStatus),
 	}
 }
 

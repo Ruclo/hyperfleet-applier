@@ -25,16 +25,20 @@ const (
 	testOwner     = "owner-a"
 )
 
-// newMini creates a Store backed by miniredis. Caller must close client and mr.
-func newMini() (*Store, *redis.Client, *miniredis.Miniredis, error) {
+func newMiniStore(t *testing.T) *Store {
+	t.Helper()
 	mr, err := miniredis.Run()
 	if err != nil {
-		return nil, nil, nil, err
+		t.Fatalf("miniredis.Run: %v", err)
 	}
-	client := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("redis client close: %v", err)
+		}
+		mr.Close()
 	})
-	return New(client), client, mr, nil
+	return New(client)
 }
 
 func testIdentity(typ desire.DesireType, name string) desire.Identity {
@@ -50,32 +54,18 @@ func testIdentity(typ desire.DesireType, name string) desire.Identity {
 
 func TestRedisStore_SpecStoreConformance(t *testing.T) {
 	conformance.RunSpecStoreSuite(t, func(t *testing.T) desire.SpecStore {
-		store, client, mr, err := newMini()
-		if err != nil {
-			t.Fatalf("NewMini: %v", err)
-		}
-		t.Cleanup(func() { _ = client.Close(); mr.Close() })
-		return store
+		return newMiniStore(t)
 	})
 }
 
 func TestRedisStore_StatusStoreConformance(t *testing.T) {
 	conformance.RunStatusStoreSuite(t, func(t *testing.T) desire.StatusStore {
-		store, client, mr, err := newMini()
-		if err != nil {
-			t.Fatalf("NewMini: %v", err)
-		}
-		t.Cleanup(func() { _ = client.Close(); mr.Close() })
-		return store
+		return newMiniStore(t)
 	})
 }
 
 func TestUpdateApplyDesireSpec_ConcurrentCAS(t *testing.T) {
-	store, client, mr, err := newMini()
-	if err != nil {
-		t.Fatalf("newMini: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close(); mr.Close() })
+	store := newMiniStore(t)
 
 	ctx := context.Background()
 	id := testIdentity(desire.TypeApply, "cas-race")
@@ -94,10 +84,8 @@ func TestUpdateApplyDesireSpec_ConcurrentCAS(t *testing.T) {
 		success  atomic.Int32
 		conflict atomic.Int32
 	)
-	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		go func(i int) {
-			defer wg.Done()
+	for i := range goroutines {
+		wg.Go(func() {
 			content := json.RawMessage(fmt.Sprintf(`{"v":%d}`, i))
 			_, updateErr := store.UpdateApplyDesireSpec(
 				ctx, id, desire.ApplySpec{KubeContent: content}, testOwner, created.Version,
@@ -110,7 +98,7 @@ func TestUpdateApplyDesireSpec_ConcurrentCAS(t *testing.T) {
 			default:
 				t.Errorf("unexpected error: %v", updateErr)
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 
@@ -184,15 +172,11 @@ func TestLoadClusterRecords_UnexpectedValueType(t *testing.T) {
 }
 
 func TestLoadClusterRecords_ScanPagesManyKeys(t *testing.T) {
-	store, client, mr, err := newMini()
-	if err != nil {
-		t.Fatalf("newMini: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close(); mr.Close() })
+	store := newMiniStore(t)
 
 	ctx := context.Background()
 	n := int(scanCount) + 20 // exceed one SCAN page so paging is exercised
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := testIdentity(desire.TypeApply, fmt.Sprintf("cm-%03d", i))
 		if _, createErr := store.CreateApplyDesire(ctx, desire.ApplyDesire{
 			Identity: id,
@@ -213,11 +197,7 @@ func TestLoadClusterRecords_ScanPagesManyKeys(t *testing.T) {
 }
 
 func TestCreateReadDesire_AttachesAndIncrementsSharedVersion(t *testing.T) {
-	store, client, mr, err := newMini()
-	if err != nil {
-		t.Fatalf("newMini: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close(); mr.Close() })
+	store := newMiniStore(t)
 
 	ctx := context.Background()
 	idApply := testIdentity(desire.TypeApply, "shared-read")
@@ -260,11 +240,7 @@ func (c *txFailClient) Watch(ctx context.Context, fn func(*redis.Tx) error, keys
 }
 
 func TestCASMutate_NoopReturnsNilRecord(t *testing.T) {
-	store, client, mr, err := newMini()
-	if err != nil {
-		t.Fatalf("newMini: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close(); mr.Close() })
+	store := newMiniStore(t)
 
 	rec, casErr := store.casMutate(context.Background(), "cas-noop-key", func(*resourceRecord, bool) error {
 		return errCASNoop

@@ -49,7 +49,7 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 
 	rk := d.Identity.ResourceKey()
 	key := rk.String()
-	spec := cloneApplySpec(d.Spec)
+	spec := desire.CloneApplySpec(d.Spec)
 
 	rec, exists := s.items[key]
 	if !exists {
@@ -120,8 +120,13 @@ func (s *Store) UpdateApplyDesireSpec(
 		return desire.ApplyDesire{}, err
 	}
 
-	cloned := cloneApplySpec(spec)
+	cloned := desire.CloneApplySpec(spec)
 	rec.Apply = &cloned
+	// Clear the status: it described the previous spec, which is no longer the
+	// desired state. Retaining a stale Successful=True would report the new,
+	// unreconciled spec as already achieved. Matches Create/Delete, which also
+	// reset ApplyStatus.
+	rec.ApplyStatus = desire.Status{}
 	rec.Version++
 	return s.projectApplyDesire(rec), nil
 }
@@ -432,7 +437,7 @@ func (s *Store) UpdateApplyDesireStatus(
 		return desire.ApplyDesire{}, desire.ErrVersionConflict
 	}
 
-	rec.ApplyStatus = cloneStatus(status)
+	rec.ApplyStatus = desire.CloneStatus(status)
 	rec.Version++
 	return s.projectApplyDesire(rec), nil
 }
@@ -453,7 +458,7 @@ func (s *Store) UpdateDeleteDesireStatus(
 		return desire.DeleteDesire{}, desire.ErrVersionConflict
 	}
 
-	rec.DeleteStatus = cloneStatus(status)
+	rec.DeleteStatus = desire.CloneStatus(status)
 	rec.Version++
 	return s.projectDeleteDesire(rec), nil
 }
@@ -471,7 +476,7 @@ func (s *Store) UpdateReadDesireStatus(
 		return desire.ReadDesire{}, desire.ErrNotFound
 	}
 
-	rec.ReadStatus = cloneReadStatus(status)
+	rec.ReadStatus = desire.CloneReadStatus(status)
 	return s.projectReadDesire(rec), nil
 }
 
@@ -485,8 +490,8 @@ func (s *Store) projectApplyDesire(rec *resourceRecord) desire.ApplyDesire {
 		Owner:      rec.Owner,
 		ResourceID: rec.ApplyResourceID,
 		Version:    rec.Version,
-		Spec:       cloneApplySpec(*rec.Apply),
-		Status:     cloneStatus(rec.ApplyStatus),
+		Spec:       desire.CloneApplySpec(*rec.Apply),
+		Status:     desire.CloneStatus(rec.ApplyStatus),
 	}
 }
 
@@ -497,7 +502,7 @@ func (s *Store) projectDeleteDesire(rec *resourceRecord) desire.DeleteDesire {
 		Owner:      rec.Owner,
 		ResourceID: rec.DeleteResourceID,
 		Version:    rec.Version,
-		Status:     cloneStatus(rec.DeleteStatus),
+		Status:     desire.CloneStatus(rec.DeleteStatus),
 	}
 }
 
@@ -508,7 +513,7 @@ func (s *Store) projectReadDesire(rec *resourceRecord) desire.ReadDesire {
 		Owner:      rec.Owner,
 		ResourceID: rec.ReadResourceID,
 		Version:    rec.Version,
-		Status:     cloneReadStatus(rec.ReadStatus),
+		Status:     desire.CloneReadStatus(rec.ReadStatus),
 	}
 }
 

@@ -133,7 +133,7 @@ type SpecStore interface {
 }
 
 // StatusStore manages the status side of desires (status-only updates and reads).
-// Updates do not check ownership; they only require Version match.
+// Updates do not check ownership; version rules are per method.
 type StatusStore interface {
 	// GetApplyDesire retrieves an ApplyDesire including its status.
 	// Returns ErrNotFound if the desire doesn't exist.
@@ -159,7 +159,7 @@ type StatusStore interface {
 
 	// UpdateReadDesireStatus updates the Status field of a ReadDesire,
 	// optionally including KubeContent.
-	// Requires exact Version match; returns ErrVersionConflict if stale.
-	// Does not check ownership.
-	UpdateReadDesireStatus(ctx context.Context, id Identity, status ReadStatus, version int64) (ReadDesire, error)
+	// No version check; never returns ErrVersionConflict; does not advance
+	// the shared resource version. Does not check ownership.
+	UpdateReadDesireStatus(ctx context.Context, id Identity, status ReadStatus) (ReadDesire, error)
 }

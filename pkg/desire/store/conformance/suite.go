@@ -906,29 +906,114 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			}
 		})
 
-		t.Run("UpdateStatusSuccessIncrementsVersion", func(t *testing.T) {
+		t.Run("UpdateMissingReturnsNotFound", func(t *testing.T) {
+			store := newStore(t)
+			id := identity("cluster-a", desire.TypeRead, "missing")
+
+			status := desire.ReadStatus{
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+			}
+			if _, err := store.UpdateReadDesireStatus(ctx, id, status); !errors.Is(err, desire.ErrNotFound) {
+				t.Fatalf("expected ErrNotFound, got %v", err)
+			}
+		})
+
+		t.Run("UpdateStatusSucceedsWithoutVersionCheck", func(t *testing.T) {
 			store := newStore(t)
 			spec := seedSpecStore(t, store)
 			id := identity("cluster-a", desire.TypeRead, "read-2")
 
-			created, err := spec.CreateReadDesire(ctx, newReadDesire(id, ownerA))
-			if err != nil {
+			if _, err := spec.CreateReadDesire(ctx, newReadDesire(id, ownerA)); err != nil {
 				t.Fatalf("CreateReadDesire: %v", err)
 			}
 
 			status := desire.ReadStatus{
 				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
 			}
-			updated, err := store.UpdateReadDesireStatus(ctx, id, status, created.Version)
-			if err != nil {
+			if _, err := store.UpdateReadDesireStatus(ctx, id, status); err != nil {
 				t.Fatalf("UpdateReadDesireStatus: %v", err)
 			}
-			if updated.Version <= created.Version {
-				t.Errorf(
-					"expected Version to strictly increase after successful status update, got %d -> %d",
-					created.Version, updated.Version,
-				)
+		})
+
+		t.Run("RepeatedWritesNeverFail", func(t *testing.T) {
+			store := newStore(t)
+			spec := seedSpecStore(t, store)
+			id := identity("cluster-a", desire.TypeRead, "read-4")
+
+			if _, err := spec.CreateReadDesire(ctx, newReadDesire(id, ownerA)); err != nil {
+				t.Fatalf("CreateReadDesire: %v", err)
 			}
+
+			status := desire.ReadStatus{
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+			}
+			for i := range 5 {
+				if _, err := store.UpdateReadDesireStatus(ctx, id, status); err != nil {
+					t.Fatalf("UpdateReadDesireStatus attempt %d: %v", i, err)
+				}
+			}
+		})
+
+		t.Run("DoesNotAdvanceVersionApplyOrDeleteCASDependsOn", func(t *testing.T) {
+			readStatus := desire.ReadStatus{
+				Status: desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
+			}
+
+			t.Run("Apply", func(t *testing.T) {
+				store := newStore(t)
+				spec := seedSpecStore(t, store)
+				id := identity("cluster-a", desire.TypeApply, "shared-1")
+				readID := id
+				readID.Type = desire.TypeRead
+
+				if _, err := spec.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, kubeContentV1)); err != nil {
+					t.Fatalf("CreateApplyDesire: %v", err)
+				}
+				// Version after CreateReadDesire attach; before Read status write.
+				createdRead, err := spec.CreateReadDesire(ctx, newReadDesire(readID, ownerA))
+				if err != nil {
+					t.Fatalf("CreateReadDesire: %v", err)
+				}
+
+				if _, err := store.UpdateReadDesireStatus(ctx, readID, readStatus); err != nil {
+					t.Fatalf("UpdateReadDesireStatus: %v", err)
+				}
+
+				applyStatus := desire.Status{
+					Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonApplied)},
+				}
+				if _, err := store.UpdateApplyDesireStatus(ctx, id, applyStatus, createdRead.Version); err != nil {
+					t.Fatalf("UpdateApplyDesireStatus with pre-Read-status version failed: %v", err)
+				}
+			})
+
+			t.Run("Delete", func(t *testing.T) {
+				store := newStore(t)
+				spec := seedSpecStore(t, store)
+				id := identity("cluster-a", desire.TypeDelete, "shared-2")
+				readID := id
+				readID.Type = desire.TypeRead
+
+				if _, err := spec.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA)); err != nil {
+					t.Fatalf("CreateDeleteDesire: %v", err)
+				}
+				// Version after CreateReadDesire attach; before Read status write.
+				createdRead, err := spec.CreateReadDesire(ctx, newReadDesire(readID, ownerA))
+				if err != nil {
+					t.Fatalf("CreateReadDesire: %v", err)
+				}
+
+				if _, err := store.UpdateReadDesireStatus(ctx, readID, readStatus); err != nil {
+					t.Fatalf("UpdateReadDesireStatus: %v", err)
+				}
+
+				deleteStatus := desire.Status{
+					Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonWaitingForDeletion)},
+				}
+				if _, err := store.UpdateDeleteDesireStatus(ctx, id, deleteStatus, createdRead.Version); err != nil {
+					t.Fatalf("UpdateDeleteDesireStatus with pre-Read-status version failed: %v", err)
+				}
+			})
 		})
 
 		t.Run("KubeContentMirror", func(t *testing.T) {
@@ -949,7 +1034,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				Status:      desire.Status{Conditions: []metav1.Condition{condition(desire.TypeSuccessful, desire.ReasonSynced)}},
 				KubeContent: content,
 			}
-			updated, err := store.UpdateReadDesireStatus(ctx, id, readStatus, created.Version)
+			updated, err := store.UpdateReadDesireStatus(ctx, id, readStatus)
 			if err != nil {
 				t.Fatalf("UpdateReadDesireStatus: %v", err)
 			}

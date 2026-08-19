@@ -3,6 +3,8 @@
 GO ?= go
 GOFMT ?= gofmt
 
+ENVTEST_K8S_VERSION ?= 1.36.2
+
 # Invoke a pinned tool: $(call gotool,name)
 # All tools share tools/go.mod with Go 1.24+ tool directives.
 TOOL_MOD := tools/go.mod
@@ -22,15 +24,14 @@ build: ## Build all packages
 test: ## Run unit tests
 	$(GO) test -v -race -coverprofile=coverage.out ./...
 
-.PHONY: test-coverage
-test-coverage: test ## Run tests and show coverage
-	$(GO) tool cover -html=coverage.out
-
-.PHONY: clean
-clean: ## Remove build artifacts
-	rm -f coverage.out
-
-##@ Code Quality
+.PHONY: test-envtest
+test-envtest: ## Run envtest-backed integration tests against a real kube-apiserver
+	@assets=$$($(call gotool,setup-envtest) use -i -p path $(ENVTEST_K8S_VERSION)); \
+	if [ -z "$$assets" ]; then \
+		echo "setup-envtest: failed to resolve installed assets for $(ENVTEST_K8S_VERSION)"; \
+		exit 1; \
+	fi; \
+	KUBEBUILDER_ASSETS="$$assets" $(GO) test -race -tags envtest ./... -run Envtest -v
 
 .PHONY: fmt
 fmt: ## Format Go code

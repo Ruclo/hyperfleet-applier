@@ -1,4 +1,4 @@
-package memory
+package desire_test
 
 import (
 	"encoding/json"
@@ -11,25 +11,25 @@ import (
 
 func TestCloneApplySpec_IsolatesAndPreservesNil(t *testing.T) {
 	src := desire.ApplySpec{KubeContent: json.RawMessage(`{"v":1}`)}
-	cloned := cloneApplySpec(src)
+	cloned := desire.CloneApplySpec(src)
 	cloned.KubeContent[2] = '9'
 	if string(src.KubeContent) != `{"v":1}` {
-		t.Fatalf("cloneApplySpec must not share KubeContent backing array")
+		t.Fatalf("CloneApplySpec must not share KubeContent backing array")
 	}
-	if cloneApplySpec(desire.ApplySpec{}).KubeContent != nil {
-		t.Fatalf("cloneApplySpec must preserve nil KubeContent")
+	if desire.CloneApplySpec(desire.ApplySpec{}).KubeContent != nil {
+		t.Fatalf("CloneApplySpec must preserve nil KubeContent")
 	}
 }
 
 func TestCloneStatus_IsolatesAndPreservesNil(t *testing.T) {
 	src := desire.Status{Conditions: []metav1.Condition{{Type: desire.TypeSuccessful, Reason: desire.ReasonApplied}}}
-	cloned := cloneStatus(src)
+	cloned := desire.CloneStatus(src)
 	cloned.Conditions[0].Reason = "mutated"
 	if src.Conditions[0].Reason != desire.ReasonApplied {
-		t.Fatalf("cloneStatus must not share Conditions backing array")
+		t.Fatalf("CloneStatus must not share Conditions backing array")
 	}
-	if cloneStatus(desire.Status{}).Conditions != nil {
-		t.Fatalf("cloneStatus must preserve nil Conditions")
+	if desire.CloneStatus(desire.Status{}).Conditions != nil {
+		t.Fatalf("CloneStatus must preserve nil Conditions")
 	}
 }
 
@@ -42,21 +42,21 @@ func TestCloneReadStatus_IsolatesAndPreservesNil(t *testing.T) {
 		},
 		KubeContent: json.RawMessage(`{"v":1}`),
 	}
-	cloned := cloneReadStatus(src)
+	cloned := desire.CloneReadStatus(src)
 	cloned.Conditions[0].Reason = "mutated"
 	cloned.KubeContent[2] = '9'
 	if src.Conditions[0].Reason != desire.ReasonSynced {
-		t.Fatalf("cloneReadStatus must not share Conditions backing array")
+		t.Fatalf("CloneReadStatus must not share Conditions backing array")
 	}
 	if string(src.KubeContent) != `{"v":1}` {
-		t.Fatalf("cloneReadStatus must not share KubeContent backing array")
+		t.Fatalf("CloneReadStatus must not share KubeContent backing array")
 	}
 
-	empty := cloneReadStatus(desire.ReadStatus{})
+	empty := desire.CloneReadStatus(desire.ReadStatus{})
 	if empty.Conditions != nil {
-		t.Fatalf("cloneReadStatus must preserve nil Conditions")
+		t.Fatalf("CloneReadStatus must preserve nil Conditions")
 	}
 	if empty.KubeContent != nil {
-		t.Fatalf("cloneReadStatus must preserve nil KubeContent")
+		t.Fatalf("CloneReadStatus must preserve nil KubeContent")
 	}
 }

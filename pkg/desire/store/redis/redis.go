@@ -1,3 +1,4 @@
+// Package redis provides a Redis-backed desire store.
 package redis
 
 import (
@@ -5,6 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -21,6 +26,9 @@ const scanCount int64 = 100
 // errCASNoop aborts a WATCH callback without writing (no matching mutation).
 var errCASNoop = errors.New("desire: cas noop")
 
+// keyPrefix starts every desire key and opens the Redis Cluster hash tag.
+const keyPrefix = "desire/{"
+
 // Client is the Redis surface this store needs: Cmdable plus Watch for
 // optimistic transactions (WATCH/MULTI/EXEC).
 type Client interface {
@@ -28,27 +36,20 @@ type Client interface {
 	Watch(ctx context.Context, fn func(*redis.Tx) error, keys ...string) error
 }
 
-// resourceRecord is the JSON-serialized record. A nil Apply marks the absence
-// of the apply sub-state; Delete and Read track their own. Statuses are values.
+// resourceRecord is one serialized desire keyed by full Identity.
+// Apply uses Apply+Status, Delete uses Status, and Read uses ReadStatus.
 type resourceRecord struct {
-	Apply            *desire.ApplySpec  `json:"apply,omitempty"`
-	Key              desire.ResourceKey `json:"key"`
-	ApplyResourceID  string             `json:"applyResourceId,omitempty"`
-	DeleteResourceID string             `json:"deleteResourceId,omitempty"`
-	ReadResourceID   string             `json:"readResourceId,omitempty"`
-	Owner            string             `json:"owner"`
-	ReadStatus       desire.ReadStatus  `json:"readStatus"`
-	ApplyStatus      desire.Status      `json:"applyStatus"`
-	DeleteStatus     desire.Status      `json:"deleteStatus"`
-	Version          int64              `json:"version"`
-	Delete           bool               `json:"delete,omitempty"`
-	Read             bool               `json:"read,omitempty"`
+	Identity   desire.Identity   `json:"identity"`
+	Apply      *desire.ApplySpec `json:"apply,omitempty"`
+	OriginID   string            `json:"originId,omitempty"`
+	Owner      string            `json:"owner"`
+	Status     desire.Status     `json:"status"`
+	ReadStatus desire.ReadStatus `json:"readStatus"`
+	Version    int64             `json:"version"`
 }
 
-// Store is a Redis-backed implementation of SpecStore and StatusStore.
-//
-// Mutating operations use Redis WATCH/MULTI/EXEC so version checks and writes
-// are linearizable under concurrent clients (compare-and-swap on Version).
+// Store is a Redis-backed SpecStore and StatusStore.
+// Mutations use WATCH/MULTI/EXEC for versioned compare-and-swap.
 type Store struct {
 	client Client
 }
@@ -56,6 +57,29 @@ type Store struct {
 // New creates a new Redis store connected to the given client.
 func New(client Client) *Store {
 	return &Store{client: client}
+}
+
+// redisKey encodes an Identity into a Redis key.
+// The target coordinates share one hash tag so sibling desire keys land in the
+// same cluster slot; fields are path-escaped.
+func redisKey(id desire.Identity) string {
+	return keyPrefix + strings.Join([]string{
+		url.PathEscape(id.ManagementCluster),
+		url.PathEscape(id.Group),
+		url.PathEscape(id.Resource),
+		url.PathEscape(id.Namespace),
+		url.PathEscape(id.Name),
+	}, "/") + "}/" + string(id.Type)
+}
+
+// globEscaper escapes Redis glob metacharacters so a key fragment is matched
+var globEscaper = strings.NewReplacer(
+	`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`,
+)
+
+// mcScanPrefix returns the Redis SCAN prefix for a management cluster.
+func mcScanPrefix(managementCluster string) string {
+	return globEscaper.Replace(keyPrefix+url.PathEscape(managementCluster)) + "/"
 }
 
 // loadRecord fetches and decodes the record at key, mapping a missing key to
@@ -75,63 +99,185 @@ func (s *Store) loadRecord(ctx context.Context, key string) (*resourceRecord, er
 	return &rec, nil
 }
 
-// casMutate runs mutate under WATCH/MULTI/EXEC. TxFailedErr retries up to
-// maxCASRetries, then returns ErrAborted. errCASNoop yields (nil, nil).
+// getRecordTx fetches and decodes the record at key within a transaction,
+// returning (nil, nil) when the key is absent.
+func getRecordTx(ctx context.Context, tx *redis.Tx, key string) (*resourceRecord, error) {
+	data, err := tx.Get(ctx, key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("desire: get %s: %w", key, err)
+	}
+	var rec resourceRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return nil, fmt.Errorf("desire: unmarshal %s: %w", key, err)
+	}
+	return &rec, nil
+}
+
+// casBaseDelay is the base jitter ceiling for CAS retry backoff.
+const casBaseDelay = 5 * time.Millisecond
+
+// watchRetry runs fn under WATCH/MULTI/EXEC and retries TxFailedErr
+// with a short randomized, increasing delay between attempts.
+// errCASNoop counts as success; retries stop at ErrAborted.
+func (s *Store) watchRetry(ctx context.Context, fn func(*redis.Tx) error, keys ...string) error {
+	for attempt := 1; attempt <= maxCASRetries; attempt++ {
+		err := s.client.Watch(ctx, fn, keys...)
+		switch {
+		case err == nil, errors.Is(err, errCASNoop):
+			return nil
+		case errors.Is(err, redis.TxFailedErr):
+			ceil := int64(casBaseDelay) * int64(attempt)
+			d := rand.Int64N(ceil) //nolint:gosec // jitter
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(d)):
+			}
+		default:
+			return err
+		}
+	}
+	return desire.ErrAborted
+}
+
+// casMutate loads a record, lets mutate update it, then writes it back.
+// errCASNoop returns (nil, nil).
 func (s *Store) casMutate(
 	ctx context.Context, key string, mutate func(rec *resourceRecord, exists bool) error,
 ) (*resourceRecord, error) {
 	var out *resourceRecord
-	for attempt := 1; attempt <= maxCASRetries; attempt++ {
-		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
-			data, getErr := tx.Get(ctx, key).Bytes()
-			exists := true
-			var rec resourceRecord
-			switch {
-			case errors.Is(getErr, redis.Nil):
-				exists = false
-			case getErr != nil:
-				return fmt.Errorf("desire: get %s: %w", key, getErr)
-			default:
-				if uErr := json.Unmarshal(data, &rec); uErr != nil {
-					return fmt.Errorf("desire: unmarshal %s: %w", key, uErr)
-				}
+	err := s.watchRetry(ctx, func(tx *redis.Tx) error {
+		rec, getErr := getRecordTx(ctx, tx, key)
+		if getErr != nil {
+			return getErr
+		}
+		exists := rec != nil
+		if rec == nil {
+			rec = &resourceRecord{}
+		}
+		if mErr := mutate(rec, exists); mErr != nil {
+			return mErr
+		}
+		_, pErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			b, mErr := json.Marshal(rec)
+			if mErr != nil {
+				return fmt.Errorf("desire: marshal %s: %w", key, mErr)
 			}
-
-			if mErr := mutate(&rec, exists); mErr != nil {
-				return mErr
-			}
-
-			_, pErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				if rec.isEmpty() {
-					pipe.Del(ctx, key)
-					return nil
-				}
-				b, mErr := json.Marshal(&rec)
-				if mErr != nil {
-					return fmt.Errorf("desire: marshal %s: %w", key, mErr)
-				}
-				pipe.Set(ctx, key, b, 0)
-				return nil
-			})
-			if pErr != nil {
-				return pErr
-			}
-			out = &rec
+			pipe.Set(ctx, key, b, 0)
 			return nil
-		}, key)
+		})
+		if pErr != nil {
+			return pErr
+		}
+		out = rec
+		return nil
+	}, key)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
-		switch {
-		case err == nil:
-			return out, nil
-		case errors.Is(err, errCASNoop):
-			return nil, nil
-		case errors.Is(err, redis.TxFailedErr):
-			continue
-		default:
-			return nil, err
+// casDelete loads a record, runs precheck, then deletes it.
+// precheck may return errCASNoop to skip the delete.
+func (s *Store) casDelete(
+	ctx context.Context, key string, precheck func(rec *resourceRecord, exists bool) error,
+) error {
+	return s.watchRetry(ctx, func(tx *redis.Tx) error {
+		rec, getErr := getRecordTx(ctx, tx, key)
+		if getErr != nil {
+			return getErr
+		}
+		exists := rec != nil
+		if rec == nil {
+			rec = &resourceRecord{}
+		}
+		if pErr := precheck(rec, exists); pErr != nil {
+			return pErr
+		}
+		_, pErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, key)
+			return nil
+		})
+		return pErr
+	}, key)
+}
+
+// targetSiblings maps existing sibling desire records by type.
+type targetSiblings = map[desire.DesireType]*resourceRecord
+
+// casCreate watches all sibling desire keys for a target and creates one record
+// atomically, optionally deleting sibling keys in the same transaction.
+func (s *Store) casCreate(
+	ctx context.Context,
+	id desire.Identity,
+	build func(sibs targetSiblings) (*resourceRecord, []string, error),
+) (*resourceRecord, error) {
+	keyOf := func(t desire.DesireType) string {
+		sib := id
+		sib.Type = t
+		return redisKey(sib)
+	}
+	keys := make([]string, len(desire.AllTypes()))
+	for i, t := range desire.AllTypes() {
+		keys[i] = keyOf(t)
+	}
+
+	var out *resourceRecord
+	err := s.watchRetry(ctx, func(tx *redis.Tx) error {
+		sibs := make(targetSiblings, len(desire.AllTypes()))
+		for _, t := range desire.AllTypes() {
+			rec, getErr := getRecordTx(ctx, tx, keyOf(t))
+			if getErr != nil {
+				return getErr
+			}
+			if rec != nil {
+				sibs[t] = rec
+			}
+		}
+
+		newRec, delKeys, bErr := build(sibs)
+		if bErr != nil {
+			return bErr
+		}
+
+		newKey := redisKey(newRec.Identity)
+		_, pErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			b, mErr := json.Marshal(newRec)
+			if mErr != nil {
+				return fmt.Errorf("desire: marshal %s: %w", newKey, mErr)
+			}
+			pipe.Set(ctx, newKey, b, 0)
+			for _, dk := range delKeys {
+				pipe.Del(ctx, dk)
+			}
+			return nil
+		})
+		if pErr != nil {
+			return pErr
+		}
+		out = newRec
+		return nil
+	}, keys...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// checkTargetOwner enforces the shared owner for a target.
+func checkTargetOwner(
+	ctx context.Context, id desire.Identity, attempted string, sibs targetSiblings,
+) error {
+	for _, t := range desire.AllTypes() {
+		if r := sibs[t]; r != nil {
+			return desire.CheckOwner(ctx, id, r.Owner, attempted)
 		}
 	}
-	return nil, desire.ErrAborted
+	return nil
 }
 
 // CreateApplyDesire creates a new ApplyDesire.
@@ -140,30 +286,24 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 		return desire.ApplyDesire{}, fmt.Errorf("desire: validate apply desire: %w", err)
 	}
 
-	rk := d.Identity.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if exists {
-			if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
-				return fmt.Errorf("desire: create apply desire %s: %w", rk, err)
-			}
-			if rec.Delete {
-				return desire.ErrDeletePending
-			}
-			if rec.Apply != nil {
-				return desire.ErrAlreadyExists
-			}
-		} else {
-			rec.Key = rk
-			rec.Owner = d.Owner
+	rec, err := s.casCreate(ctx, d.Identity, func(sibs targetSiblings) (*resourceRecord, []string, error) {
+		if err := checkTargetOwner(ctx, d.Identity, d.Owner, sibs); err != nil {
+			return nil, nil, fmt.Errorf("desire: create apply desire %s: %w", d.Identity, err)
 		}
-		spec := d.Spec
-		rec.Apply = &spec
-		rec.ApplyResourceID = d.ResourceID
-		rec.ApplyStatus = desire.Status{}
-		rec.Version++
-		return nil
+		if sibs[desire.TypeDelete] != nil {
+			return nil, nil, desire.ErrDeletePending
+		}
+		if sibs[desire.TypeApply] != nil {
+			return nil, nil, desire.ErrAlreadyExists
+		}
+		spec := desire.CloneApplySpec(d.Spec)
+		return &resourceRecord{
+			Identity: d.Identity,
+			Owner:    d.Owner,
+			OriginID: d.OriginID,
+			Version:  1,
+			Apply:    &spec,
+		}, nil, nil
 	})
 	if err != nil {
 		return desire.ApplyDesire{}, err
@@ -173,18 +313,13 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 
 // GetApplyDesire retrieves an ApplyDesire.
 func (s *Store) GetApplyDesire(ctx context.Context, id desire.Identity) (desire.ApplyDesire, error) {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.loadRecord(ctx, key)
+	rec, err := s.loadRecord(ctx, redisKey(id))
 	if err != nil {
 		return desire.ApplyDesire{}, err
 	}
-
 	if rec.Apply == nil {
 		return desire.ApplyDesire{}, desire.ErrNotFound
 	}
-
 	return s.projectApplyDesire(rec), nil
 }
 
@@ -196,25 +331,23 @@ func (s *Store) UpdateApplyDesireSpec(
 		return desire.ApplyDesire{}, fmt.Errorf("desire: validate apply spec: %w", err)
 	}
 
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
+	rec, err := s.casMutate(ctx, redisKey(id), func(rec *resourceRecord, exists bool) error {
 		if !exists || rec.Apply == nil {
 			return desire.ErrNotFound
 		}
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return fmt.Errorf("desire: update apply desire spec %s: %w", rk, err)
+		if err := desire.CheckOwner(ctx, id, rec.Owner, owner); err != nil {
+			return fmt.Errorf("desire: update apply desire spec %s: %w", id, err)
 		}
-		rec.Apply = &spec
+		cloned := desire.CloneApplySpec(spec)
+		rec.Apply = &cloned
 		// Clear the status: it described the previous spec, which is no longer
 		// the desired state. Retaining a stale Successful=True would report the
 		// new, unreconciled spec as already achieved. Matches Create/Delete,
-		// which also reset ApplyStatus.
-		rec.ApplyStatus = desire.Status{}
+		// which also reset the status.
+		rec.Status = desire.Status{}
 		rec.Version++
 		return nil
 	})
@@ -226,26 +359,18 @@ func (s *Store) UpdateApplyDesireSpec(
 
 // DeleteApplyDesire deletes an ApplyDesire.
 func (s *Store) DeleteApplyDesire(ctx context.Context, id desire.Identity, owner string, version int64) error {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	_, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
+	return s.casDelete(ctx, redisKey(id), func(rec *resourceRecord, exists bool) error {
 		if !exists || rec.Apply == nil {
 			return desire.ErrNotFound
 		}
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return fmt.Errorf("desire: delete apply desire %s: %w", rk, err)
+		if err := desire.CheckOwner(ctx, id, rec.Owner, owner); err != nil {
+			return fmt.Errorf("desire: delete apply desire %s: %w", id, err)
 		}
-		rec.Apply = nil
-		rec.ApplyResourceID = ""
-		rec.ApplyStatus = desire.Status{}
-		rec.Version++
 		return nil
 	})
-	return err
 }
 
 // CreateDeleteDesire creates a new DeleteDesire.
@@ -254,30 +379,24 @@ func (s *Store) CreateDeleteDesire(ctx context.Context, d desire.DeleteDesire) (
 		return desire.DeleteDesire{}, fmt.Errorf("desire: validate delete desire: %w", err)
 	}
 
-	rk := d.Identity.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if exists {
-			if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
-				return fmt.Errorf("desire: create delete desire %s: %w", rk, err)
-			}
-			if rec.Delete {
-				return desire.ErrAlreadyExists
-			}
-		} else {
-			rec.Key = rk
-			rec.Owner = d.Owner
+	rec, err := s.casCreate(ctx, d.Identity, func(sibs targetSiblings) (*resourceRecord, []string, error) {
+		if err := checkTargetOwner(ctx, d.Identity, d.Owner, sibs); err != nil {
+			return nil, nil, fmt.Errorf("desire: create delete desire %s: %w", d.Identity, err)
 		}
-		// Delete supersedes an existing Apply.
-		rec.Apply = nil
-		rec.ApplyResourceID = ""
-		rec.ApplyStatus = desire.Status{}
-		rec.Delete = true
-		rec.DeleteResourceID = d.ResourceID
-		rec.DeleteStatus = desire.Status{}
-		rec.Version++
-		return nil
+		if sibs[desire.TypeDelete] != nil {
+			return nil, nil, desire.ErrAlreadyExists
+		}
+		// Delete supersedes an existing Apply for the same target.
+		var delKeys []string
+		if apply := sibs[desire.TypeApply]; apply != nil {
+			delKeys = append(delKeys, redisKey(apply.Identity))
+		}
+		return &resourceRecord{
+			Identity: d.Identity,
+			Owner:    d.Owner,
+			OriginID: d.OriginID,
+			Version:  1,
+		}, delKeys, nil
 	})
 	if err != nil {
 		return desire.DeleteDesire{}, err
@@ -287,43 +406,33 @@ func (s *Store) CreateDeleteDesire(ctx context.Context, d desire.DeleteDesire) (
 
 // GetDeleteDesire retrieves a DeleteDesire.
 func (s *Store) GetDeleteDesire(ctx context.Context, id desire.Identity) (desire.DeleteDesire, error) {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.loadRecord(ctx, key)
+	if id.Type != desire.TypeDelete {
+		return desire.DeleteDesire{}, desire.ErrNotFound
+	}
+	rec, err := s.loadRecord(ctx, redisKey(id))
 	if err != nil {
 		return desire.DeleteDesire{}, err
 	}
-
-	if !rec.Delete {
-		return desire.DeleteDesire{}, desire.ErrNotFound
-	}
-
 	return s.projectDeleteDesire(rec), nil
 }
 
 // DeleteDeleteDesire deletes a DeleteDesire.
 func (s *Store) DeleteDeleteDesire(ctx context.Context, id desire.Identity, owner string, version int64) error {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	_, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if !exists || !rec.Delete {
+	if id.Type != desire.TypeDelete {
+		return desire.ErrNotFound
+	}
+	return s.casDelete(ctx, redisKey(id), func(rec *resourceRecord, exists bool) error {
+		if !exists {
 			return desire.ErrNotFound
 		}
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return fmt.Errorf("desire: delete delete desire %s: %w", rk, err)
+		if err := desire.CheckOwner(ctx, id, rec.Owner, owner); err != nil {
+			return fmt.Errorf("desire: delete delete desire %s: %w", id, err)
 		}
-		rec.Delete = false
-		rec.DeleteResourceID = ""
-		rec.DeleteStatus = desire.Status{}
-		rec.Version++
 		return nil
 	})
-	return err
 }
 
 // CreateReadDesire creates a new ReadDesire.
@@ -332,26 +441,19 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 		return desire.ReadDesire{}, fmt.Errorf("desire: validate read desire: %w", err)
 	}
 
-	rk := d.Identity.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if exists {
-			if err := desire.CheckOwner(ctx, rk, rec.Owner, d.Owner); err != nil {
-				return fmt.Errorf("desire: create read desire %s: %w", rk, err)
-			}
-			if rec.Read {
-				return desire.ErrAlreadyExists
-			}
-		} else {
-			rec.Key = rk
-			rec.Owner = d.Owner
+	rec, err := s.casCreate(ctx, d.Identity, func(sibs targetSiblings) (*resourceRecord, []string, error) {
+		if err := checkTargetOwner(ctx, d.Identity, d.Owner, sibs); err != nil {
+			return nil, nil, fmt.Errorf("desire: create read desire %s: %w", d.Identity, err)
 		}
-		rec.Read = true
-		rec.ReadResourceID = d.ResourceID
-		rec.ReadStatus = desire.ReadStatus{}
-		rec.Version++
-		return nil
+		if sibs[desire.TypeRead] != nil {
+			return nil, nil, desire.ErrAlreadyExists
+		}
+		return &resourceRecord{
+			Identity: d.Identity,
+			Owner:    d.Owner,
+			OriginID: d.OriginID,
+			Version:  1,
+		}, nil, nil
 	})
 	if err != nil {
 		return desire.ReadDesire{}, err
@@ -361,43 +463,33 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 
 // GetReadDesire retrieves a ReadDesire.
 func (s *Store) GetReadDesire(ctx context.Context, id desire.Identity) (desire.ReadDesire, error) {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.loadRecord(ctx, key)
+	if id.Type != desire.TypeRead {
+		return desire.ReadDesire{}, desire.ErrNotFound
+	}
+	rec, err := s.loadRecord(ctx, redisKey(id))
 	if err != nil {
 		return desire.ReadDesire{}, err
 	}
-
-	if !rec.Read {
-		return desire.ReadDesire{}, desire.ErrNotFound
-	}
-
 	return s.projectReadDesire(rec), nil
 }
 
 // DeleteReadDesire deletes a ReadDesire.
 func (s *Store) DeleteReadDesire(ctx context.Context, id desire.Identity, owner string, version int64) error {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	_, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if !exists || !rec.Read {
+	if id.Type != desire.TypeRead {
+		return desire.ErrNotFound
+	}
+	return s.casDelete(ctx, redisKey(id), func(rec *resourceRecord, exists bool) error {
+		if !exists {
 			return desire.ErrNotFound
 		}
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		if err := desire.CheckOwner(ctx, rk, rec.Owner, owner); err != nil {
-			return fmt.Errorf("desire: delete read desire %s: %w", rk, err)
+		if err := desire.CheckOwner(ctx, id, rec.Owner, owner); err != nil {
+			return fmt.Errorf("desire: delete read desire %s: %w", id, err)
 		}
-		rec.Read = false
-		rec.ReadResourceID = ""
-		rec.ReadStatus = desire.ReadStatus{}
-		rec.Version++
 		return nil
 	})
-	return err
 }
 
 // clusterRecord pairs a decoded record with the Redis key it was loaded from.
@@ -409,7 +501,7 @@ type clusterRecord struct {
 // loadClusterRecords fetches and decodes all records for a management
 // cluster via SCAN + MGET, instead of one GET per key.
 func (s *Store) loadClusterRecords(ctx context.Context, managementCluster string) ([]clusterRecord, error) {
-	pattern := desire.ManagementClusterKeyPrefix(managementCluster) + "*"
+	pattern := mcScanPrefix(managementCluster) + "*"
 	keys, err := s.scanKeys(ctx, pattern)
 	if err != nil {
 		return nil, err
@@ -484,7 +576,7 @@ func (s *Store) ListApplyDesires(ctx context.Context, managementCluster string) 
 
 	result := make([]desire.ApplyDesire, 0, len(records))
 	for _, cr := range records {
-		if cr.Record.Apply != nil {
+		if cr.Record.Identity.Type == desire.TypeApply {
 			result = append(result, s.projectApplyDesire(cr.Record))
 		}
 	}
@@ -500,7 +592,7 @@ func (s *Store) ListDeleteDesires(ctx context.Context, managementCluster string)
 
 	result := make([]desire.DeleteDesire, 0, len(records))
 	for _, cr := range records {
-		if cr.Record.Delete {
+		if cr.Record.Identity.Type == desire.TypeDelete {
 			result = append(result, s.projectDeleteDesire(cr.Record))
 		}
 	}
@@ -516,7 +608,7 @@ func (s *Store) ListReadDesires(ctx context.Context, managementCluster string) (
 
 	result := make([]desire.ReadDesire, 0, len(records))
 	for _, cr := range records {
-		if cr.Record.Read {
+		if cr.Record.Identity.Type == desire.TypeRead {
 			result = append(result, s.projectReadDesire(cr.Record))
 		}
 	}
@@ -531,42 +623,13 @@ func (s *Store) DeleteByPrefix(ctx context.Context, managementCluster string, se
 	}
 
 	for _, cr := range records {
-		rec := cr.Record
-		needsWrite := (rec.Apply != nil && sel.Matches(rec.Key.Identity(desire.TypeApply))) ||
-			(rec.Delete && sel.Matches(rec.Key.Identity(desire.TypeDelete))) ||
-			(rec.Read && sel.Matches(rec.Key.Identity(desire.TypeRead)))
-		if !needsWrite {
+		if !sel.Matches(cr.Record.Identity) {
 			continue
 		}
-
-		_, err := s.casMutate(ctx, cr.RedisKey, func(rec *resourceRecord, exists bool) error {
-			if !exists {
+		err := s.casDelete(ctx, cr.RedisKey, func(rec *resourceRecord, exists bool) error {
+			if !exists || !sel.Matches(rec.Identity) {
 				return errCASNoop
 			}
-
-			modified := false
-			if rec.Apply != nil && sel.Matches(rec.Key.Identity(desire.TypeApply)) {
-				rec.Apply = nil
-				rec.ApplyResourceID = ""
-				rec.ApplyStatus = desire.Status{}
-				modified = true
-			}
-			if rec.Delete && sel.Matches(rec.Key.Identity(desire.TypeDelete)) {
-				rec.Delete = false
-				rec.DeleteResourceID = ""
-				rec.DeleteStatus = desire.Status{}
-				modified = true
-			}
-			if rec.Read && sel.Matches(rec.Key.Identity(desire.TypeRead)) {
-				rec.Read = false
-				rec.ReadResourceID = ""
-				rec.ReadStatus = desire.ReadStatus{}
-				modified = true
-			}
-			if !modified {
-				return errCASNoop
-			}
-			rec.Version++
 			return nil
 		})
 		if err != nil {
@@ -580,17 +643,14 @@ func (s *Store) DeleteByPrefix(ctx context.Context, managementCluster string, se
 func (s *Store) UpdateApplyDesireStatus(
 	ctx context.Context, id desire.Identity, status desire.Status, version int64,
 ) (desire.ApplyDesire, error) {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
+	rec, err := s.casMutate(ctx, redisKey(id), func(rec *resourceRecord, exists bool) error {
 		if !exists || rec.Apply == nil {
 			return desire.ErrNotFound
 		}
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		rec.ApplyStatus = desire.CloneStatus(status)
+		rec.Status = desire.CloneStatus(status)
 		rec.Version++
 		return nil
 	})
@@ -604,17 +664,17 @@ func (s *Store) UpdateApplyDesireStatus(
 func (s *Store) UpdateDeleteDesireStatus(
 	ctx context.Context, id desire.Identity, status desire.Status, version int64,
 ) (desire.DeleteDesire, error) {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if !exists || !rec.Delete {
+	if id.Type != desire.TypeDelete {
+		return desire.DeleteDesire{}, desire.ErrNotFound
+	}
+	rec, err := s.casMutate(ctx, redisKey(id), func(rec *resourceRecord, exists bool) error {
+		if !exists {
 			return desire.ErrNotFound
 		}
 		if rec.Version != version {
 			return desire.ErrVersionConflict
 		}
-		rec.DeleteStatus = desire.CloneStatus(status)
+		rec.Status = desire.CloneStatus(status)
 		rec.Version++
 		return nil
 	})
@@ -628,11 +688,11 @@ func (s *Store) UpdateDeleteDesireStatus(
 func (s *Store) UpdateReadDesireStatus(
 	ctx context.Context, id desire.Identity, status desire.ReadStatus,
 ) (desire.ReadDesire, error) {
-	rk := id.ResourceKey()
-	key := rk.String()
-
-	rec, err := s.casMutate(ctx, key, func(rec *resourceRecord, exists bool) error {
-		if !exists || !rec.Read {
+	if id.Type != desire.TypeRead {
+		return desire.ReadDesire{}, desire.ErrNotFound
+	}
+	rec, err := s.casMutate(ctx, redisKey(id), func(rec *resourceRecord, exists bool) error {
+		if !exists {
 			return desire.ErrNotFound
 		}
 		rec.ReadStatus = desire.CloneReadStatus(status)
@@ -651,12 +711,12 @@ func (s *Store) projectApplyDesire(rec *resourceRecord) desire.ApplyDesire {
 		return desire.ApplyDesire{}
 	}
 	return desire.ApplyDesire{
-		Identity:   rec.Key.Identity(desire.TypeApply),
-		Owner:      rec.Owner,
-		ResourceID: rec.ApplyResourceID,
-		Version:    rec.Version,
-		Spec:       desire.CloneApplySpec(*rec.Apply),
-		Status:     desire.CloneStatus(rec.ApplyStatus),
+		Identity: rec.Identity,
+		Owner:    rec.Owner,
+		OriginID: rec.OriginID,
+		Version:  rec.Version,
+		Spec:     desire.CloneApplySpec(*rec.Apply),
+		Status:   desire.CloneStatus(rec.Status),
 	}
 }
 
@@ -665,11 +725,11 @@ func (s *Store) projectDeleteDesire(rec *resourceRecord) desire.DeleteDesire {
 		return desire.DeleteDesire{}
 	}
 	return desire.DeleteDesire{
-		Identity:   rec.Key.Identity(desire.TypeDelete),
-		Owner:      rec.Owner,
-		ResourceID: rec.DeleteResourceID,
-		Version:    rec.Version,
-		Status:     desire.CloneStatus(rec.DeleteStatus),
+		Identity: rec.Identity,
+		Owner:    rec.Owner,
+		OriginID: rec.OriginID,
+		Version:  rec.Version,
+		Status:   desire.CloneStatus(rec.Status),
 	}
 }
 
@@ -678,15 +738,10 @@ func (s *Store) projectReadDesire(rec *resourceRecord) desire.ReadDesire {
 		return desire.ReadDesire{}
 	}
 	return desire.ReadDesire{
-		Identity:   rec.Key.Identity(desire.TypeRead),
-		Owner:      rec.Owner,
-		ResourceID: rec.ReadResourceID,
-		Version:    rec.Version,
-		Status:     desire.CloneReadStatus(rec.ReadStatus),
+		Identity: rec.Identity,
+		Owner:    rec.Owner,
+		OriginID: rec.OriginID,
+		Version:  rec.Version,
+		Status:   desire.CloneReadStatus(rec.ReadStatus),
 	}
-}
-
-// isEmpty reports whether this record has no active sub-states.
-func (rec *resourceRecord) isEmpty() bool {
-	return rec.Apply == nil && !rec.Delete && !rec.Read
 }

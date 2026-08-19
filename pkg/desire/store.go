@@ -65,14 +65,12 @@ func (sel PrefixSelector) Matches(id Identity) bool {
 	return true
 }
 
-// SpecStore manages the specification side of desires (creates, updates, deletes, reads).
-// Each Create/Update method atomically increments the resource-level version counter.
+// SpecStore manages desire specs.
+// Apply, Delete, and Read are separate records keyed by full Identity.
 type SpecStore interface {
-	// CreateApplyDesire atomically creates a new ApplyDesire for a resource.
-	// When a resource record already exists, ownership is checked first:
-	// Returns ErrOwnerConflict if the resource has a different owner.
-	// Returns ErrDeletePending if a DeleteDesire is currently active for that resource.
-	// Returns ErrAlreadyExists if an ApplyDesire already exists for that resource.
+	// CreateApplyDesire creates an ApplyDesire.
+	// Returns ErrOwnerConflict for a different target owner, ErrDeletePending for
+	// an active DeleteDesire, or ErrAlreadyExists if the ApplyDesire exists.
 	CreateApplyDesire(ctx context.Context, d ApplyDesire) (ApplyDesire, error)
 
 	// GetApplyDesire retrieves a previously created ApplyDesire.
@@ -90,11 +88,10 @@ type SpecStore interface {
 	// Requires exact Version match and owner.
 	DeleteApplyDesire(ctx context.Context, id Identity, owner string, version int64) error
 
-	// CreateDeleteDesire atomically creates a new DeleteDesire for a resource.
-	// If an ApplyDesire exists, it is superseded (cleared).
-	// When a resource record already exists, ownership is checked first:
-	// Returns ErrOwnerConflict if the resource has a different owner.
-	// Returns ErrAlreadyExists if a DeleteDesire already exists for that resource.
+	// CreateDeleteDesire creates a DeleteDesire and removes any sibling
+	// ApplyDesire for the same target.
+	// Returns ErrOwnerConflict for a different target owner or ErrAlreadyExists
+	// if the DeleteDesire exists.
 	CreateDeleteDesire(ctx context.Context, d DeleteDesire) (DeleteDesire, error)
 
 	// GetDeleteDesire retrieves a previously created DeleteDesire.
@@ -105,10 +102,9 @@ type SpecStore interface {
 	// Requires exact Version match and owner.
 	DeleteDeleteDesire(ctx context.Context, id Identity, owner string, version int64) error
 
-	// CreateReadDesire atomically creates a new ReadDesire for a resource.
-	// When a resource record already exists, ownership is checked first:
-	// Returns ErrOwnerConflict if the resource has a different owner.
-	// Returns ErrAlreadyExists if a ReadDesire already exists for that resource.
+	// CreateReadDesire creates a ReadDesire.
+	// Returns ErrOwnerConflict for a different target owner or ErrAlreadyExists if
+	// the ReadDesire exists.
 	CreateReadDesire(ctx context.Context, d ReadDesire) (ReadDesire, error)
 
 	// GetReadDesire retrieves a previously created ReadDesire.
@@ -157,9 +153,7 @@ type StatusStore interface {
 	// Returns ErrNotFound if the desire doesn't exist.
 	GetReadDesire(ctx context.Context, id Identity) (ReadDesire, error)
 
-	// UpdateReadDesireStatus updates the Status field of a ReadDesire,
-	// optionally including KubeContent.
-	// No version check; never returns ErrVersionConflict; does not advance
-	// the shared resource version. Does not check ownership.
+	// UpdateReadDesireStatus updates ReadDesire status, optionally including
+	// KubeContent. It does not check ownership or advance Version.
 	UpdateReadDesireStatus(ctx context.Context, id Identity, status ReadStatus) (ReadDesire, error)
 }

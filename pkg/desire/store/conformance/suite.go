@@ -1,6 +1,5 @@
-// Package conformance is a reusable test suite that SpecStore / StatusStore
-// backends must pass. Backends implement both interfaces on one concrete type;
-// RunStatusStoreSuite seeds fixtures by asserting the store to SpecStore.
+// Package conformance is a reusable suite for SpecStore and StatusStore
+// backends. RunStatusStoreSuite seeds fixtures through SpecStore.
 package conformance
 
 import (
@@ -197,7 +196,7 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			withStatus, err := statusStore.UpdateApplyDesireStatus(
 				ctx, idApply,
 				desire.Status{Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)}},
-				created.Version+1, // CreateReadDesire incremented Version on the shared resource record
+				created.Version, // per-type records: creating the Read did not touch the Apply's version
 			)
 			if err != nil {
 				t.Fatalf("UpdateApplyDesireStatus: %v", err)
@@ -650,19 +649,17 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if err != nil {
 				t.Fatalf("CreateReadDesire alongside Apply: %v", err)
 			}
-			if readD.Version <= appliedD.Version {
-				t.Errorf(
-					"expected CreateReadDesire to increment shared Version, got %d -> %d",
-					appliedD.Version, readD.Version,
-				)
+			// Read has its own Version and does not change Apply's.
+			if readD.Version != 1 {
+				t.Errorf("expected new Read to start at Version 1, got %d", readD.Version)
 			}
 
 			got, err := store.GetApplyDesire(ctx, idApply)
 			if err != nil {
 				t.Fatalf("GetApplyDesire: %v", err)
 			}
-			if got.Version != readD.Version {
-				t.Errorf("expected Apply to share bumped Version %d, got %d", readD.Version, got.Version)
+			if got.Version != appliedD.Version {
+				t.Errorf("expected Apply version unchanged at %d, got %d", appliedD.Version, got.Version)
 			}
 
 			gotRead, err := store.GetReadDesire(ctx, idRead)
@@ -688,19 +685,17 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			if err != nil {
 				t.Fatalf("CreateReadDesire alongside Delete: %v", err)
 			}
-			if readD.Version <= deletedD.Version {
-				t.Errorf(
-					"expected CreateReadDesire to increment shared Version, got %d -> %d",
-					deletedD.Version, readD.Version,
-				)
+			// Read has its own Version and does not change Delete's.
+			if readD.Version != 1 {
+				t.Errorf("expected new Read to start at Version 1, got %d", readD.Version)
 			}
 
 			got, err := store.GetDeleteDesire(ctx, idDelete)
 			if err != nil {
 				t.Fatalf("GetDeleteDesire: %v", err)
 			}
-			if got.Version != readD.Version {
-				t.Errorf("expected Delete to share bumped Version %d, got %d", readD.Version, got.Version)
+			if got.Version != deletedD.Version {
+				t.Errorf("expected Delete version unchanged at %d, got %d", deletedD.Version, got.Version)
 			}
 
 			gotRead, err := store.GetReadDesire(ctx, idRead)
@@ -709,6 +704,132 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 			if gotRead.Version != readD.Version {
 				t.Errorf("expected Read to coexist, got Version %d vs %d", gotRead.Version, readD.Version)
+			}
+		})
+	})
+
+	t.Run("CrossTypeOwnership", func(t *testing.T) {
+		// All desire types for a target share one owner.
+		t.Run("ReadUnderApplyForeignOwnerRejected", func(t *testing.T) {
+			store := newStore(t)
+			idApply := identity("cluster-a", desire.TypeApply, "cross-owner-1")
+			idRead := identity(idApply.ManagementCluster, desire.TypeRead, idApply.Name)
+
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`)); err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+			if _, err := store.CreateReadDesire(ctx, newReadDesire(idRead, "owner-b")); !errors.Is(
+				err, desire.ErrOwnerConflict,
+			) {
+				t.Fatalf("expected ErrOwnerConflict for foreign owner Read, got %v", err)
+			}
+		})
+
+		t.Run("DeleteUnderApplyForeignOwnerRejected", func(t *testing.T) {
+			store := newStore(t)
+			idApply := identity("cluster-a", desire.TypeApply, "cross-owner-2")
+			idDelete := identity(idApply.ManagementCluster, desire.TypeDelete, idApply.Name)
+
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`)); err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+			if _, err := store.CreateDeleteDesire(ctx, newDeleteDesire(idDelete, "owner-b")); !errors.Is(
+				err, desire.ErrOwnerConflict,
+			) {
+				t.Fatalf("expected ErrOwnerConflict for foreign owner Delete, got %v", err)
+			}
+		})
+
+		t.Run("ApplyUnderReadForeignOwnerRejected", func(t *testing.T) {
+			store := newStore(t)
+			idRead := identity("cluster-a", desire.TypeRead, "cross-owner-rev-1")
+			idApply := identity(idRead.ManagementCluster, desire.TypeApply, idRead.Name)
+
+			if _, err := store.CreateReadDesire(ctx, newReadDesire(idRead, ownerA)); err != nil {
+				t.Fatalf("CreateReadDesire: %v", err)
+			}
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, "owner-b", `{}`)); !errors.Is(
+				err, desire.ErrOwnerConflict,
+			) {
+				t.Fatalf("expected ErrOwnerConflict for foreign owner Apply under Read, got %v", err)
+			}
+		})
+
+		t.Run("ApplyUnderDeleteForeignOwnerRejected", func(t *testing.T) {
+			store := newStore(t)
+			idDelete := identity("cluster-a", desire.TypeDelete, "cross-owner-rev-2")
+			idApply := identity(idDelete.ManagementCluster, desire.TypeApply, idDelete.Name)
+
+			if _, err := store.CreateDeleteDesire(ctx, newDeleteDesire(idDelete, ownerA)); err != nil {
+				t.Fatalf("CreateDeleteDesire: %v", err)
+			}
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, "owner-b", `{}`)); !errors.Is(
+				err, desire.ErrOwnerConflict,
+			) {
+				t.Fatalf("expected ErrOwnerConflict for foreign owner Apply under Delete, got %v", err)
+			}
+		})
+
+		t.Run("MatchingOwnerAcrossTypesAllowed", func(t *testing.T) {
+			store := newStore(t)
+			idRead := identity("cluster-a", desire.TypeRead, "cross-owner-3")
+			idApply := identity(idRead.ManagementCluster, desire.TypeApply, idRead.Name)
+
+			if _, err := store.CreateReadDesire(ctx, newReadDesire(idRead, ownerA)); err != nil {
+				t.Fatalf("CreateReadDesire: %v", err)
+			}
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`)); err != nil {
+				t.Fatalf("expected same-owner Apply alongside Read to succeed, got %v", err)
+			}
+		})
+
+		t.Run("MismatchedTypeAccessorsDoNotTouchApply", func(t *testing.T) {
+			store := newStore(t)
+			statusStore, ok := store.(desire.StatusStore)
+			if !ok {
+				t.Fatalf("store must also implement desire.StatusStore")
+			}
+			idApply := identity("cluster-a", desire.TypeApply, "type-guard")
+
+			created, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`))
+			if err != nil {
+				t.Fatalf("CreateApplyDesire: %v", err)
+			}
+
+			if _, err = store.GetDeleteDesire(ctx, idApply); !errors.Is(err, desire.ErrNotFound) {
+				t.Fatalf("GetDeleteDesire(apply identity): want ErrNotFound, got %v", err)
+			}
+			if err = store.DeleteDeleteDesire(ctx, idApply, ownerA, created.Version); !errors.Is(
+				err, desire.ErrNotFound,
+			) {
+				t.Fatalf("DeleteDeleteDesire(apply identity): want ErrNotFound, got %v", err)
+			}
+			if _, err = store.GetReadDesire(ctx, idApply); !errors.Is(err, desire.ErrNotFound) {
+				t.Fatalf("GetReadDesire(apply identity): want ErrNotFound, got %v", err)
+			}
+			if err = store.DeleteReadDesire(ctx, idApply, ownerA, created.Version); !errors.Is(
+				err, desire.ErrNotFound,
+			) {
+				t.Fatalf("DeleteReadDesire(apply identity): want ErrNotFound, got %v", err)
+			}
+
+			if _, err = statusStore.UpdateDeleteDesireStatus(
+				ctx, idApply, desire.Status{}, created.Version,
+			); !errors.Is(err, desire.ErrNotFound) {
+				t.Fatalf("UpdateDeleteDesireStatus(apply identity): want ErrNotFound, got %v", err)
+			}
+			if _, err = statusStore.UpdateReadDesireStatus(
+				ctx, idApply, desire.ReadStatus{},
+			); !errors.Is(err, desire.ErrNotFound) {
+				t.Fatalf("UpdateReadDesireStatus(apply identity): want ErrNotFound, got %v", err)
+			}
+
+			got, err := store.GetApplyDesire(ctx, idApply)
+			if err != nil {
+				t.Fatalf("GetApplyDesire after mismatched accessors: %v", err)
+			}
+			if got.Version != created.Version {
+				t.Fatalf("expected Apply version %d unchanged, got %d", created.Version, got.Version)
 			}
 		})
 	})
@@ -802,19 +923,18 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 		})
 
-		t.Run("PartialClearBumpsSharedVersion", func(t *testing.T) {
+		t.Run("PartialClearLeavesSiblingVersionUntouched", func(t *testing.T) {
 			store := newStore(t)
 			idApply := identity("cluster-a", desire.TypeApply, "ver-bump")
 			idRead := identity(idApply.ManagementCluster, desire.TypeRead, idApply.Name)
 
-			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`)); err != nil {
+			applied, err := store.CreateApplyDesire(ctx, newApplyDesire(idApply, ownerA, `{}`))
+			if err != nil {
 				t.Fatalf("CreateApplyDesire: %v", err)
 			}
-			read, createErr := store.CreateReadDesire(ctx, newReadDesire(idRead, ownerA))
-			if createErr != nil {
+			if _, createErr := store.CreateReadDesire(ctx, newReadDesire(idRead, ownerA)); createErr != nil {
 				t.Fatalf("CreateReadDesire: %v", createErr)
 			}
-			staleVersion := read.Version
 
 			if delErr := store.DeleteByPrefix(ctx, "cluster-a", desire.PrefixSelector{
 				Type: desire.TypeRead,
@@ -823,25 +943,25 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 				t.Fatalf("DeleteByPrefix: %v", delErr)
 			}
 
+			// Clearing Read must not change Apply's Version.
 			got, getErr := store.GetApplyDesire(ctx, idApply)
 			if getErr != nil {
 				t.Fatalf("GetApplyDesire after prefix delete: %v", getErr)
 			}
-			if got.Version != staleVersion+1 {
-				t.Fatalf("expected shared Version %d after clearing Read, got %d", staleVersion+1, got.Version)
+			if got.Version != applied.Version {
+				t.Fatalf("expected Apply Version unchanged at %d after clearing Read, got %d", applied.Version, got.Version)
 			}
 
-			_, updateErr := store.UpdateApplyDesireSpec(
-				ctx, idApply, desire.ApplySpec{KubeContent: json.RawMessage(`{"v":2}`)}, ownerA, staleVersion,
-			)
-			if !errors.Is(updateErr, desire.ErrVersionConflict) {
-				t.Fatalf("expected ErrVersionConflict for stale version %d, got %v", staleVersion, updateErr)
+			if _, updateErr := store.UpdateApplyDesireSpec(
+				ctx, idApply, desire.ApplySpec{KubeContent: json.RawMessage(`{"v":2}`)}, ownerA, applied.Version,
+			); updateErr != nil {
+				t.Fatalf("expected update with unchanged version %d to succeed, got %v", applied.Version, updateErr)
 			}
 		})
 	})
 }
 
-// RunStatusStoreSuite exercises StatusStore. Fixtures are seeded via seedSpecStore.
+// RunStatusStoreSuite exercises StatusStore.
 func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.StatusStore) {
 	ctx := context.Background()
 
@@ -956,9 +1076,7 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 			if string(afterStatus.Spec.KubeContent) != `{"v":1}` {
 				t.Errorf("UpdateApplyDesireStatus must not change Spec, got %q", afterStatus.Spec.KubeContent)
 			}
-			// The reverse direction is intentionally not isolated:
-			// UpdateApplyDesireSpec clears the status (see UpdateSpecClearsStatus),
-			// since the old status described a spec that is no longer desired.
+			// The reverse direction is not isolated: UpdateApplyDesireSpec clears status.
 		})
 	})
 
@@ -1126,15 +1244,15 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				readID := id
 				readID.Type = desire.TypeRead
 
-				if _, err := spec.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, kubeContentV1)); err != nil {
+				createdApply, err := spec.CreateApplyDesire(ctx, newApplyDesire(id, ownerA, kubeContentV1))
+				if err != nil {
 					t.Fatalf("CreateApplyDesire: %v", err)
 				}
-				// Version after CreateReadDesire attach; before Read status write.
-				createdRead, err := spec.CreateReadDesire(ctx, newReadDesire(readID, ownerA))
-				if err != nil {
+				if _, err := spec.CreateReadDesire(ctx, newReadDesire(readID, ownerA)); err != nil {
 					t.Fatalf("CreateReadDesire: %v", err)
 				}
 
+				// Read status writes must not change Apply's Version.
 				if _, err := store.UpdateReadDesireStatus(ctx, readID, readStatus); err != nil {
 					t.Fatalf("UpdateReadDesireStatus: %v", err)
 				}
@@ -1142,8 +1260,8 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				applyStatus := desire.Status{
 					Conditions: []metav1.Condition{condition(desire.ReasonApplied, metav1.ConditionTrue)},
 				}
-				if _, err := store.UpdateApplyDesireStatus(ctx, id, applyStatus, createdRead.Version); err != nil {
-					t.Fatalf("UpdateApplyDesireStatus with pre-Read-status version failed: %v", err)
+				if _, err := store.UpdateApplyDesireStatus(ctx, id, applyStatus, createdApply.Version); err != nil {
+					t.Fatalf("UpdateApplyDesireStatus after Read status write failed: %v", err)
 				}
 			})
 
@@ -1154,15 +1272,15 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				readID := id
 				readID.Type = desire.TypeRead
 
-				if _, err := spec.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA)); err != nil {
+				createdDelete, err := spec.CreateDeleteDesire(ctx, newDeleteDesire(id, ownerA))
+				if err != nil {
 					t.Fatalf("CreateDeleteDesire: %v", err)
 				}
-				// Version after CreateReadDesire attach; before Read status write.
-				createdRead, err := spec.CreateReadDesire(ctx, newReadDesire(readID, ownerA))
-				if err != nil {
+				if _, err := spec.CreateReadDesire(ctx, newReadDesire(readID, ownerA)); err != nil {
 					t.Fatalf("CreateReadDesire: %v", err)
 				}
 
+				// Read status writes must not change Delete's Version.
 				if _, err := store.UpdateReadDesireStatus(ctx, readID, readStatus); err != nil {
 					t.Fatalf("UpdateReadDesireStatus: %v", err)
 				}
@@ -1170,8 +1288,8 @@ func RunStatusStoreSuite(t *testing.T, newStore func(t *testing.T) desire.Status
 				deleteStatus := desire.Status{
 					Conditions: []metav1.Condition{condition(desire.ReasonWaitingForDeletion, metav1.ConditionFalse)},
 				}
-				if _, err := store.UpdateDeleteDesireStatus(ctx, id, deleteStatus, createdRead.Version); err != nil {
-					t.Fatalf("UpdateDeleteDesireStatus with pre-Read-status version failed: %v", err)
+				if _, err := store.UpdateDeleteDesireStatus(ctx, id, deleteStatus, createdDelete.Version); err != nil {
+					t.Fatalf("UpdateDeleteDesireStatus after Read status write failed: %v", err)
 				}
 			})
 		})

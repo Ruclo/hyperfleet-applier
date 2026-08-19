@@ -31,7 +31,7 @@ func TestProjectApplyDesire_NilSafe(t *testing.T) {
 	}
 }
 
-func TestCreateApplyDesire_AttachesToExistingRead(t *testing.T) {
+func TestCreateApplyDesire_IndependentOfExistingRead(t *testing.T) {
 	store := New()
 	ctx := context.Background()
 
@@ -62,8 +62,9 @@ func TestCreateApplyDesire_AttachesToExistingRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateApplyDesire: %v", err)
 	}
-	if applied.Version != read.Version+1 {
-		t.Fatalf("expected attached Apply to bump shared version to %d, got %d", read.Version+1, applied.Version)
+	// Apply has its own Version and does not change Read's.
+	if applied.Version != 1 {
+		t.Fatalf("expected new Apply to start at Version 1, got %d", applied.Version)
 	}
 
 	got, err := store.GetApplyDesire(ctx, idApply)
@@ -72,5 +73,13 @@ func TestCreateApplyDesire_AttachesToExistingRead(t *testing.T) {
 	}
 	if got.Version != applied.Version {
 		t.Fatalf("expected Get to return version %d, got %d", applied.Version, got.Version)
+	}
+
+	gotRead, err := store.GetReadDesire(ctx, idRead)
+	if err != nil {
+		t.Fatalf("GetReadDesire: %v", err)
+	}
+	if gotRead.Version != read.Version {
+		t.Fatalf("expected Read version unchanged at %d, got %d", read.Version, gotRead.Version)
 	}
 }

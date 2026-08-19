@@ -12,21 +12,20 @@ Three desire types, each targeting exactly one Kubernetes resource via an `Ident
 - **DeleteDesire** — make a resource not exist (confirmed gone past finalizers)
 - **ReadDesire** — mirror a live object's state back to the control plane (includes `KubeContent`)
 
-`Identity.ResourceKey()` projects away `Type` to a `ResourceKey`, the key backends actually store
-under (`desire/<cluster>/<group>/<resource>/<namespace>/<name>`, path-escaped) — one physical
-resource record can hold an Apply spec, a Delete flag, and a Read status simultaneously, keyed by
-the same resource key. Creating a DeleteDesire supersedes (clears) any existing ApplyDesire for that
-resource; creating an ApplyDesire while a DeleteDesire is active returns `ErrDeletePending`.
+Each desire type is its own record with its own `Version`, keyed by full `Identity`. A target can
+therefore have up to three sibling records: apply, delete, and read.
+
+Create-time invariants across sibling records:
+
+- one owner per target (`ErrOwnerConflict` on mismatch)
+- apply/delete mutual exclusion (`DeleteDesire` supersedes `ApplyDesire`; active delete blocks apply)
+- `ReadDesire` coexists with either
 
 `Identity` implements `slog.LogValuer` so controllers can log `"identity", id` instead of unwrapping
 fields by hand (shared across apply/delete/read).
 
-Every desire carries one summary condition (`Status.Conditions`, `TypeSuccessful`) with positive
-polarity — `Successful=True` means desired state is achieved, `Successful=False` covers both
-"in progress" (e.g. `ReasonWaitingForDeletion`, not an error) and real errors (`ReasonKubeAPIError`,
-`ReasonPreCheckFailed`), disambiguated by `Reason`, not by a separate Progressing/Degraded condition.
-This mirrors the rest of the HyperFleet status contract. See the `Conditions` doc comment in
-`types.go` for the full reason table.
+Every desire carries one summary condition (`TypeSuccessful`). `Successful=True` means achieved;
+`Successful=False` covers both in-progress and failure states, distinguished by `Reason`.
 
 ## Store contracts
 
@@ -36,13 +35,13 @@ Store contracts split spec and status:
   `ListDeleteDesires` / `ListReadDesires` and `DeleteByPrefix`. Create/Update enforce single-writer
   ownership (`ErrOwnerConflict` on mismatch) and require exact `Version` match for updates
   (`ErrVersionConflict` if stale).
-- **StatusStore** - status-only Get/Update per desire type. Does **not** check ownership (any
-  reconciler can write status once it holds the record). `UpdateApplyDesireStatus` and
-  `UpdateDeleteDesireStatus` require an exact `Version` match; `UpdateReadDesireStatus`
-  performs no version check and does not advance the shared resource version.
+- **StatusStore** - status-only Get/Update per desire type. Does **not** check ownership.
+  `UpdateApplyDesireStatus` and `UpdateDeleteDesireStatus` require exact `Version` match;
+  `UpdateReadDesireStatus` does not advance `Version`.
+
+The spec/status split is a Go capability boundary, not a storage-enforced permission boundary.
 
 `Validate()` methods on `Identity`/`ApplySpec`/each desire type enforce DNS-1123/1035 sizing rules
 on identity fields (`validate.go`) — backends call these at Create time.
 
-`observe.go` holds process-local owner-conflict metrics/logging (`CheckOwner`,
-`ReportOwnerConflict`); real Prometheus/OTel export belongs in the hosting binary.
+`observe.go` holds process-local owner-conflict metrics/logging.

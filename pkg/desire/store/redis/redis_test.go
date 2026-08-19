@@ -118,7 +118,79 @@ func TestUpdateApplyDesireSpec_ConcurrentCAS(t *testing.T) {
 	}
 }
 
-// oddMGetClient uses a real client for SCAN but forces MGET to return a non-string value.
+func TestCreateDesire_ConcurrentCrossTypeOwnerMultiKeyCAS(t *testing.T) {
+	// Race CreateApply (owner A) against CreateRead/CreateDelete (owner B) on
+	// the same target. The multi-key WATCH must serialize sibling creates so
+	// exactly one owner wins.
+	cases := []struct {
+		name string
+		sib  desire.DesireType
+	}{
+		{name: "ApplyVsRead", sib: desire.TypeRead},
+		{name: "ApplyVsDelete", sib: desire.TypeDelete},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMiniStore(t)
+			ctx := context.Background()
+			applyID := testIdentity(desire.TypeApply, "create-race-"+string(tc.sib))
+			sibID := applyID
+			sibID.Type = tc.sib
+
+			const goroutines = 8
+			var (
+				wg       sync.WaitGroup
+				success  atomic.Int32
+				conflict atomic.Int32
+			)
+			for i := range goroutines {
+				wg.Go(func() {
+					var createErr error
+					switch {
+					case i%2 == 0:
+						_, createErr = store.CreateApplyDesire(ctx, desire.ApplyDesire{
+							Identity: applyID,
+							Owner:    "owner-a",
+							Spec:     desire.ApplySpec{KubeContent: json.RawMessage(`{}`)},
+						})
+					case tc.sib == desire.TypeRead:
+						_, createErr = store.CreateReadDesire(ctx, desire.ReadDesire{
+							Identity: sibID,
+							Owner:    "owner-b",
+						})
+					default:
+						_, createErr = store.CreateDeleteDesire(ctx, desire.DeleteDesire{
+							Identity: sibID,
+							Owner:    "owner-b",
+						})
+					}
+					switch {
+					case createErr == nil:
+						success.Add(1)
+					case errors.Is(createErr, desire.ErrOwnerConflict),
+						errors.Is(createErr, desire.ErrAlreadyExists),
+						errors.Is(createErr, desire.ErrDeletePending),
+						errors.Is(createErr, desire.ErrAborted):
+						conflict.Add(1)
+					default:
+						t.Errorf("unexpected error: %v", createErr)
+					}
+				})
+			}
+			wg.Wait()
+
+			if success.Load() != 1 {
+				t.Fatalf("expected exactly one successful create, got %d", success.Load())
+			}
+			if conflict.Load() != goroutines-1 {
+				t.Fatalf("expected %d owner/type conflicts, got %d", goroutines-1, conflict.Load())
+			}
+		})
+	}
+}
+
+// oddMGetClient uses a real SCAN client but forces MGET to return a non-string.
 type oddMGetClient struct {
 	*redis.Client
 }
@@ -139,21 +211,14 @@ func (c *oddMGetClient) MGet(ctx context.Context, keys ...string) *redis.SliceCm
 }
 
 func TestLoadClusterRecords_UnexpectedValueType(t *testing.T) {
-	// Redis MGET returns nil for non-string keys, so exercise the defensive
-	// type check with a Cmdable that yields a non-string, non-nil value.
+	// Exercise the defensive type check for a non-string MGET value.
 	mr, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("miniredis.Run: %v", err)
 	}
 	t.Cleanup(func() { mr.Close() })
 
-	badKey := desire.ResourceKey{
-		ManagementCluster: testCluster,
-		Group:             testGroup,
-		Resource:          testResource,
-		Namespace:         testNamespace,
-		Name:              "bad-type",
-	}.String()
+	badKey := redisKey(testIdentity(desire.TypeApply, "bad-type"))
 	if setErr := mr.Set(badKey, "placeholder"); setErr != nil {
 		t.Fatalf("seed key: %v", setErr)
 	}
@@ -196,7 +261,7 @@ func TestLoadClusterRecords_ScanPagesManyKeys(t *testing.T) {
 	}
 }
 
-func TestCreateReadDesire_AttachesAndIncrementsSharedVersion(t *testing.T) {
+func TestCreateReadDesire_IndependentOfExistingApply(t *testing.T) {
 	store := newMiniStore(t)
 
 	ctx := context.Background()
@@ -220,13 +285,21 @@ func TestCreateReadDesire_AttachesAndIncrementsSharedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateReadDesire: %v", err)
 	}
-	if read.Version != applied.Version+1 {
-		t.Fatalf("expected CreateReadDesire to bump shared version to %d, got %d", applied.Version+1, read.Version)
+	// Read has its own Version and does not change Apply's.
+	if read.Version != 1 {
+		t.Fatalf("expected new Read to start at Version 1, got %d", read.Version)
+	}
+
+	gotApply, err := store.GetApplyDesire(ctx, idApply)
+	if err != nil {
+		t.Fatalf("GetApplyDesire: %v", err)
+	}
+	if gotApply.Version != applied.Version {
+		t.Fatalf("expected Apply version unchanged at %d, got %d", applied.Version, gotApply.Version)
 	}
 }
 
-// txFailClient forces Watch to return TxFailedErr a fixed number of times,
-// then delegates to the real client.
+// txFailClient injects a fixed number of TxFailedErr results.
 type txFailClient struct {
 	*redis.Client
 	remaining atomic.Int32
@@ -291,17 +364,16 @@ func TestCASMutate_RetriesTxFailedErrThenSucceeds(t *testing.T) {
 			t.Fatal("expected missing key on first successful Watch")
 		}
 		*rec = resourceRecord{
-			Key:     desire.ResourceKey{ManagementCluster: testCluster, Name: "cas-retry"},
-			Owner:   testOwner,
-			Version: 1,
-			Read:    true,
+			Identity: testIdentity(desire.TypeRead, "cas-retry"),
+			Owner:    testOwner,
+			Version:  1,
 		}
 		return nil
 	})
 	if casErr != nil {
 		t.Fatalf("casMutate after TxFailedErr retries: %v", casErr)
 	}
-	if rec == nil || !rec.Read || rec.Version != 1 {
+	if rec == nil || rec.Identity.Type != desire.TypeRead || rec.Version != 1 {
 		t.Fatalf("unexpected record after retry success: %+v", rec)
 	}
 }
@@ -328,4 +400,71 @@ func TestCASMutate_TxFailedErrExhaustsRetries(t *testing.T) {
 	if !errors.Is(casErr, desire.ErrAborted) {
 		t.Fatalf("expected ErrAborted after repeated TxFailedErr, got %v", casErr)
 	}
+}
+
+func TestLoadClusterRecords_GlobMetacharactersIsolated(t *testing.T) {
+	// List/DeleteByPrefix take a raw managementCluster; SCAN must treat glob
+	// metacharacters as literals so clusters cannot cross-match.
+	store := newMiniStore(t)
+	ctx := context.Background()
+
+	seed := func(mc, name string) {
+		t.Helper()
+		id := desire.Identity{
+			ManagementCluster: mc,
+			Type:              desire.TypeApply,
+			Group:             testGroup,
+			Resource:          testResource,
+			Namespace:         testNamespace,
+			Name:              name,
+		}
+		rec := &resourceRecord{
+			Identity: id,
+			Owner:    testOwner,
+			Version:  1,
+			Apply:    &desire.ApplySpec{KubeContent: json.RawMessage(`{}`)},
+		}
+		b, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := store.client.Set(ctx, redisKey(id), b, 0).Err(); err != nil {
+			t.Fatalf("seed %q: %v", mc, err)
+		}
+	}
+
+	seed("mc-a", "plain")
+	seed("mc-a*", "globish")
+	seed("*", "star")
+
+	assertList := func(mc string, wantNames ...string) {
+		t.Helper()
+		list, err := store.ListApplyDesires(ctx, mc)
+		if err != nil {
+			t.Fatalf("ListApplyDesires(%q): %v", mc, err)
+		}
+		got := make(map[string]struct{}, len(list))
+		for _, d := range list {
+			got[d.Identity.Name] = struct{}{}
+		}
+		if len(got) != len(wantNames) {
+			t.Fatalf("ListApplyDesires(%q): got %d desires %v, want %v", mc, len(got), got, wantNames)
+		}
+		for _, name := range wantNames {
+			if _, ok := got[name]; !ok {
+				t.Fatalf("ListApplyDesires(%q): missing %q in %v", mc, name, got)
+			}
+		}
+	}
+
+	assertList("mc-a", "plain")
+	assertList("mc-a*", "globish")
+	assertList("*", "star")
+
+	if err := store.DeleteByPrefix(ctx, "*", desire.PrefixSelector{Type: desire.TypeApply}); err != nil {
+		t.Fatalf("DeleteByPrefix(*): %v", err)
+	}
+	assertList("*")
+	assertList("mc-a", "plain")
+	assertList("mc-a*", "globish")
 }

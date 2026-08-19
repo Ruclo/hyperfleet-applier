@@ -18,7 +18,7 @@ func TestReportOwnerConflict_LogsWarn(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	before := desire.OwnerConflictTotal()
-	desire.ReportOwnerConflict(context.Background(), validIdentity().ResourceKey(), "owner-a", "owner-b")
+	desire.ReportOwnerConflict(context.Background(), validIdentity(), "owner-a", "owner-b")
 	if desire.OwnerConflictTotal() != before+1 {
 		t.Fatalf("OwnerConflictTotal: before=%d after=%d, want +1", before, desire.OwnerConflictTotal())
 	}
@@ -28,14 +28,14 @@ func TestReportOwnerConflict_LogsWarn(t *testing.T) {
 }
 
 func TestCheckOwner_Mismatch(t *testing.T) {
-	err := desire.CheckOwner(context.Background(), validIdentity().ResourceKey(), "owner-a", "owner-b")
+	err := desire.CheckOwner(context.Background(), validIdentity(), "owner-a", "owner-b")
 	if !errors.Is(err, desire.ErrOwnerConflict) {
 		t.Fatalf("got %v, want ErrOwnerConflict", err)
 	}
 }
 
 func TestCheckOwner_Match(t *testing.T) {
-	if err := desire.CheckOwner(context.Background(), validIdentity().ResourceKey(), "owner-a", "owner-a"); err != nil {
+	if err := desire.CheckOwner(context.Background(), validIdentity(), "owner-a", "owner-a"); err != nil {
 		t.Fatalf("got %v, want nil", err)
 	}
 }

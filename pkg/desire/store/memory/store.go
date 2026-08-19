@@ -460,7 +460,7 @@ func (s *Store) UpdateDeleteDesireStatus(
 
 // UpdateReadDesireStatus updates the status of a ReadDesire.
 func (s *Store) UpdateReadDesireStatus(
-	ctx context.Context, id desire.Identity, status desire.ReadStatus, version int64,
+	ctx context.Context, id desire.Identity, status desire.ReadStatus,
 ) (desire.ReadDesire, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -470,12 +470,8 @@ func (s *Store) UpdateReadDesireStatus(
 	if !exists || !rec.Read {
 		return desire.ReadDesire{}, desire.ErrNotFound
 	}
-	if rec.Version != version {
-		return desire.ReadDesire{}, desire.ErrVersionConflict
-	}
 
 	rec.ReadStatus = cloneReadStatus(status)
-	rec.Version++
 	return s.projectReadDesire(rec), nil
 }
 

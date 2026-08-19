@@ -656,7 +656,7 @@ func (s *Store) UpdateDeleteDesireStatus(
 
 // UpdateReadDesireStatus updates the status of a ReadDesire.
 func (s *Store) UpdateReadDesireStatus(
-	ctx context.Context, id desire.Identity, status desire.ReadStatus, version int64,
+	ctx context.Context, id desire.Identity, status desire.ReadStatus,
 ) (desire.ReadDesire, error) {
 	rk := id.ResourceKey()
 	key := rk.String()
@@ -665,11 +665,7 @@ func (s *Store) UpdateReadDesireStatus(
 		if !exists || !rec.Read {
 			return desire.ErrNotFound
 		}
-		if rec.Version != version {
-			return desire.ErrVersionConflict
-		}
 		rec.ReadStatus = &status
-		rec.Version++
 		return nil
 	})
 	if err != nil {

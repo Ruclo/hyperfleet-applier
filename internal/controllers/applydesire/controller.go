@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/openshift-hyperfleet/hyperfleet-applier/internal/controller/conditions"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/internal/controllers/util"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 )
 
@@ -40,7 +40,7 @@ type statusWriter interface {
 	) (desire.ApplyDesire, error)
 }
 
-type Reconciler struct {
+type ApplyReconciler struct {
 	spec              specLister
 	status            statusWriter
 	dyn               dynamic.Interface
@@ -49,16 +49,16 @@ type Reconciler struct {
 	applyTimeout      time.Duration
 }
 
-// NewReconciler builds a Reconciler for one management cluster.
+// New builds a ApplyReconciler for one management cluster.
 // mapper resolves GVKs for SSA; discovery cache ownership stays with the host.
-func NewReconciler(
+func New(
 	spec specLister,
 	status statusWriter,
 	dyn dynamic.Interface,
 	mapper meta.RESTMapper,
 	managementCluster string,
-) *Reconciler {
-	return &Reconciler{
+) *ApplyReconciler {
+	return &ApplyReconciler{
 		spec:              spec,
 		status:            status,
 		dyn:               dyn,
@@ -72,7 +72,7 @@ func NewReconciler(
 // Ordinary apply failures are recorded in status and excluded from the returned
 // error; only non-conflict status-write failures are joined. Context
 // cancellation aborts immediately and is not written as status.
-func (r *Reconciler) ReconcileAll(ctx context.Context) error {
+func (r *ApplyReconciler) ReconcileAll(ctx context.Context) error {
 	desires, err := r.spec.ListApplyDesires(ctx, r.managementCluster)
 	if err != nil {
 		return fmt.Errorf("apply: list apply desires for management cluster %q: %w", r.managementCluster, err)
@@ -84,16 +84,17 @@ func (r *Reconciler) ReconcileAll(ctx context.Context) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("apply: reconcile aborted for management cluster %q: %w", r.managementCluster, ctxErr)
 		}
+		// Handles deadlineExceeded and context canceled
 		if reconcileErr := r.reconcileOne(ctx, d); reconcileErr != nil {
 			if errors.Is(reconcileErr, context.Canceled) || errors.Is(reconcileErr, context.DeadlineExceeded) {
 				return fmt.Errorf(
 					"apply: reconcile desire %s: %w",
-					describeIdentity(d.Identity), reconcileErr,
+					util.DescribeIdentity(d.Identity), reconcileErr,
 				)
 			}
 			// WithResourceID carries a display-only identity string.
 			logCtx := hflog.WithResourceType(ctx, "apply_desire")
-			logCtx = hflog.WithResourceID(logCtx, describeIdentity(d.Identity))
+			logCtx = hflog.WithResourceID(logCtx, util.DescribeIdentity(d.Identity))
 			slog.ErrorContext(logCtx, "apply: reconcile failed",
 				"identity", d.Identity,
 				"error", reconcileErr,
@@ -106,14 +107,14 @@ func (r *Reconciler) ReconcileAll(ctx context.Context) error {
 
 // reconcileOne parses d, resolves its target, applies it via SSA, and writes
 // the resulting status. It never mutates the SpecStore.
-func (r *Reconciler) reconcileOne(ctx context.Context, d desire.ApplyDesire) error {
+func (r *ApplyReconciler) reconcileOne(ctx context.Context, d desire.ApplyDesire) error {
 	newStatus, err := r.applyToCluster(ctx, d)
 	if err != nil {
 		// Cancellation aborts the pass instead of writing status.
 		return err
 	}
 
-	if conditions.Equal(newStatus, d.Status) {
+	if util.Equal(newStatus, d.Status) {
 		return nil
 	}
 
@@ -125,7 +126,7 @@ func (r *Reconciler) reconcileOne(ctx context.Context, d desire.ApplyDesire) err
 			)
 			return nil
 		}
-		return fmt.Errorf("apply: write status for %s: %w", describeIdentity(d.Identity), err)
+		return fmt.Errorf("apply: write status for %s: %w", util.DescribeIdentity(d.Identity), err)
 	}
 	return nil
 }
@@ -133,7 +134,7 @@ func (r *Reconciler) reconcileOne(ctx context.Context, d desire.ApplyDesire) err
 // applyToCluster returns the status to persist and, separately, an error.
 // Only context cancellation returns a non-nil error; all other outcomes are
 // encoded as status conditions.
-func (r *Reconciler) applyToCluster(ctx context.Context, d desire.ApplyDesire) (desire.Status, error) {
+func (r *ApplyReconciler) applyToCluster(ctx context.Context, d desire.ApplyDesire) (desire.Status, error) {
 	obj := &unstructured.Unstructured{}
 	if err := json.Unmarshal(d.Spec.KubeContent, obj); err != nil {
 		return preCheckFailed(d.Status, fmt.Sprintf(
@@ -168,7 +169,7 @@ func (r *Reconciler) applyToCluster(ctx context.Context, d desire.ApplyDesire) (
 	}); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			// Abort instead of recording shutdown as KubeAPIError.
-			return desire.Status{}, fmt.Errorf("apply %s: %w", describeIdentity(d.Identity), ctxErr)
+			return desire.Status{}, fmt.Errorf("apply %s: %w", util.DescribeIdentity(d.Identity), ctxErr)
 		}
 		return applyFailed(d.Status, err), nil
 	}
@@ -206,12 +207,4 @@ func checkApplyTarget(id desire.Identity, obj *unstructured.Unstructured, mappin
 		)
 	}
 	return nil
-}
-
-// describeIdentity formats an Identity for logs and errors.
-func describeIdentity(id desire.Identity) string {
-	return fmt.Sprintf(
-		"managementCluster=%q type=%q group=%q resource=%q namespace=%q name=%q",
-		id.ManagementCluster, id.Type, id.Group, id.Resource, id.Namespace, id.Name,
-	)
 }

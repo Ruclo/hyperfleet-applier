@@ -78,7 +78,7 @@ func TestEnvtest_UnchangedReconcileIsClusterNoOp(t *testing.T) {
 	store := memory.New()
 	const name = "cm-envtest-noop"
 
-	r := NewReconciler(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
+	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
 
 	id := applyIdentity("", "configmaps", defaultNamespace, name)
 	content := newConfigMapContent(t, name, defaultNamespace, map[string]string{"k": "v"})
@@ -139,7 +139,7 @@ func TestEnvtest_ForceReclaimsContestedField(t *testing.T) {
 	}
 
 	store := memory.New()
-	r := NewReconciler(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
+	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
 
 	content, err := json.Marshal(map[string]interface{}{
 		fieldAPIVersion: "v1",
@@ -189,7 +189,7 @@ func TestEnvtest_ClusterScopedStrayNamespace(t *testing.T) {
 	const name = "cr-envtest-stray-ns"
 
 	store := memory.New()
-	r := NewReconciler(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
+	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
 
 	id := applyIdentity(rbacGroup, "clusterroles", "", name)
 	content := newClusterRoleContentWithNamespace(t, name, "stray-namespace")

@@ -5,8 +5,7 @@ GOFMT ?= gofmt
 
 ENVTEST_K8S_VERSION ?= 1.36.2
 
-BIN_DIR := bin
-BINARY_NAME := $(BIN_DIR)/hyperfleet-applier
+BINARY_PATH ?= bin/hyperfleet-applier
 
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -17,6 +16,10 @@ LDFLAGS := -s -w \
 	-X main.version=$(APP_VERSION) \
 	-X main.commit=$(GIT_SHA) \
 	-X main.date=$(BUILD_DATE)
+
+# Version information
+CGO_ENABLED ?= 1
+GOEXPERIMENT ?= boringcrypto
 
 CONFIG ?= configs/applier.yaml
 KUBE_CONFIG_PATH ?= $(if $(KUBECONFIG),$(KUBECONFIG),$(HOME)/.kube/config)
@@ -34,12 +37,11 @@ help: ## Display this help
 
 .PHONY: build
 build: ## Build the applier binary
-	@mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd
+	CGO_ENABLED=$(CGO_ENABLED) GOEXPERIMENT=$(GOEXPERIMENT) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) ./cmd
 
 .PHONY: run
 run: build ## Run the applier service
-	./$(BINARY_NAME) serve \
+	./$(BINARY_PATH) serve \
 		--config "$(CONFIG)" \
 		--kubernetes-kube-config-path "$(KUBE_CONFIG_PATH)"
 
@@ -49,9 +51,9 @@ test: ## Run unit tests
 
 .PHONY: test-envtest
 test-envtest: ## Run envtest-backed integration tests against a real kube-apiserver
-	@assets=$$($(call gotool,setup-envtest) use -i -p path $(ENVTEST_K8S_VERSION)); \
+	@assets=$$($(call gotool,setup-envtest) use -p path $(ENVTEST_K8S_VERSION)); \
 	if [ -z "$$assets" ]; then \
-		echo "setup-envtest: failed to resolve installed assets for $(ENVTEST_K8S_VERSION)"; \
+		echo "setup-envtest: failed to resolve assets for $(ENVTEST_K8S_VERSION)"; \
 		exit 1; \
 	fi; \
 	KUBEBUILDER_ASSETS="$$assets" $(GO) test -race -tags envtest ./... -run Envtest -v
@@ -84,7 +86,7 @@ lint: ## Run golangci-lint
 	$(call gotool,golangci-lint) run
 
 .PHONY: verify
-verify: fmt-check vet ## Run all verification checks
+verify: fmt-check vet helm-verify ## Run all verification checks
 
 .PHONY: lint-check
 lint-check: fmt-check vet ## Run static code analysis (alias for verify, follows architecture naming)
@@ -106,3 +108,108 @@ verify-tools: tools ## Fail in CI if tool module drifted
 .PHONY: download
 download: ## Download dependencies
 	$(GO) mod download
+
+
+##@ Container Images
+
+# =============================================================================
+# Image Configuration
+# =============================================================================
+IMAGE_REGISTRY ?= quay.io/openshift-hyperfleet
+IMAGE_NAME ?= hyperfleet-applier
+IMAGE_TAG ?= $(APP_VERSION)
+IMG ?= $(IMAGE_REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+PLATFORM ?= linux/amd64
+
+
+BASE_IMAGE ?= registry.access.redhat.com/ubi9-micro:latest
+# Auto-detect container tool (podman preferred when available)
+CONTAINER_TOOL ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
+
+.PHONY: check-container-tool
+check-container-tool:
+ifndef CONTAINER_TOOL
+	@echo "Error: No container tool found (podman or docker)"
+	@echo ""
+	@echo "Please install one of:"
+	@echo "  brew install podman   # macOS"
+	@echo "  brew install docker   # macOS"
+	@echo "  dnf install podman    # Fedora/RHEL"
+	@exit 1
+endif
+
+# Build container image (multi-stage build, no local binary needed)
+.PHONY: image
+image: check-container-tool ## Build container image with configurable registry/tag
+	@echo "Building container image $(IMG)..."
+	$(CONTAINER_TOOL) build \
+		--platform $(PLATFORM) \
+		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
+		--build-arg APP_VERSION=$(APP_VERSION) \
+		-t $(IMG) .
+	@echo "Image built: $(IMG)"
+	@echo "$(IMG)"
+
+.PHONY: image-push
+image-push: check-container-tool ## Push container image to registry
+	@echo "Pushing image $(IMG)..."
+	$(CONTAINER_TOOL) push $(IMG)
+	@echo "Image pushed: $(IMG)"
+
+
+# Usage: QUAY_USER=myuser make image-dev
+# Dev image configuration - set QUAY_USER to push to personal registry
+DEV_TAG ?= dev-$(GIT_SHA)
+QUAY_USER ?=
+DEV_BASE_IMAGE ?= registry.access.redhat.com/ubi9/ubi-minimal:latest
+.PHONY: image-dev
+image-dev: IMAGE_REGISTRY = quay.io/$(QUAY_USER)
+image-dev: IMAGE_TAG = $(DEV_TAG)
+image-dev: BASE_IMAGE = $(DEV_BASE_IMAGE)
+image-dev: check-container-tool image image-push
+
+##@ Helm
+
+HELM ?= helm
+CHART_DIR := charts
+CHART_VALUES_FILE := charts/values.yaml
+
+# Test values for helm template rendering
+HELM_TEST_VALUES := \
+	--set image.registry=quay.io \
+	--set image.repository=openshift-hyperfleet/hyperfleet-applier \
+	--set image.tag=test \
+	--set applier.managementCluster=test-cluster \
+	--set applier.pollInterval=5s \
+	--set redis.address=redis:6379
+
+.PHONY: helm-lint
+helm-lint: ## Lint the Helm chart
+	@echo "Linting Helm chart..."
+	$(HELM) lint $(CHART_DIR)
+
+.PHONY: helm-template
+helm-template: ## Render Helm chart templates with test values
+	@echo "Rendering Helm chart templates..."
+	$(HELM) template hyperfleet-applier $(CHART_DIR) $(HELM_TEST_VALUES)
+
+.PHONY: helm-template-check
+helm-template-check: ## Verify Helm chart templates can be rendered
+	@echo "Verifying Helm chart templates can be rendered..."
+	@$(HELM) template hyperfleet-applier $(CHART_DIR) $(HELM_TEST_VALUES) > /dev/null
+	@echo "✓ Helm chart templates rendered successfully"
+
+.PHONY: helm-verify
+helm-verify: helm-lint helm-template-check verify-helm-docs ## Run all Helm chart verification checks
+	@echo "✓ All Helm chart checks passed"
+
+.PHONY: helm-docs
+helm-docs: ## Generate Helm chart README from values.yaml annotations
+	$(call gotool,helm-docs) --chart-search-root=charts --sort-values-order=file
+
+.PHONY: verify-helm-docs
+verify-helm-docs: ## Verify chart README is up to date
+	$(call gotool,helm-docs) --chart-search-root=charts --sort-values-order=file
+	@git diff --exit-code charts/README.md > /dev/null 2>&1 || \
+		(echo "ERROR: charts/README.md is out of date. Run 'make helm-docs' and commit the result." && exit 1)
+

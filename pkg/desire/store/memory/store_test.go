@@ -47,8 +47,9 @@ func TestCreateApplyDesire_IndependentOfExistingRead(t *testing.T) {
 	idApply.Type = desire.TypeApply
 
 	read, err := store.CreateReadDesire(ctx, desire.ReadDesire{
-		Identity: idRead,
-		Owner:    "owner-a",
+		Identity:      idRead,
+		Owner:         "owner-a",
+		TargetVersion: "v1",
 	})
 	if err != nil {
 		t.Fatalf("CreateReadDesire: %v", err)

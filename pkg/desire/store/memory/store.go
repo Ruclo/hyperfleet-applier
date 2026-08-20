@@ -12,13 +12,14 @@ import (
 // resourceRecord stores one desire keyed by full Identity.
 // Apply uses Apply+Status, Delete uses Status, and Read uses ReadStatus.
 type resourceRecord struct {
-	Identity   desire.Identity
-	Apply      *desire.ApplySpec
-	OriginID   string
-	Owner      string
-	Status     desire.Status
-	ReadStatus desire.ReadStatus
-	Version    int64
+	Apply         *desire.ApplySpec
+	Identity      desire.Identity
+	OriginID      string
+	Owner         string
+	TargetVersion string
+	ReadStatus    desire.ReadStatus
+	Status        desire.Status
+	Version       int64
 }
 
 // Store is a single-process in-memory implementation of SpecStore and StatusStore.
@@ -252,10 +253,11 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 	}
 
 	rec := &resourceRecord{
-		Identity: id,
-		Owner:    d.Owner,
-		OriginID: d.OriginID,
-		Version:  1,
+		Identity:      id,
+		Owner:         d.Owner,
+		OriginID:      d.OriginID,
+		TargetVersion: d.TargetVersion,
+		Version:       1,
 	}
 	s.items[id] = rec
 	return s.projectReadDesire(rec), nil
@@ -459,10 +461,11 @@ func (s *Store) projectReadDesire(rec *resourceRecord) desire.ReadDesire {
 		return desire.ReadDesire{}
 	}
 	return desire.ReadDesire{
-		Identity: rec.Identity,
-		Owner:    rec.Owner,
-		OriginID: rec.OriginID,
-		Version:  rec.Version,
-		Status:   desire.CloneReadStatus(rec.ReadStatus),
+		Identity:      rec.Identity,
+		Owner:         rec.Owner,
+		OriginID:      rec.OriginID,
+		TargetVersion: rec.TargetVersion,
+		Version:       rec.Version,
+		Status:        desire.CloneReadStatus(rec.ReadStatus),
 	}
 }

@@ -156,8 +156,9 @@ func TestCreateDesire_ConcurrentCrossTypeOwnerMultiKeyCAS(t *testing.T) {
 						})
 					case tc.sib == desire.TypeRead:
 						_, createErr = store.CreateReadDesire(ctx, desire.ReadDesire{
-							Identity: sibID,
-							Owner:    "owner-b",
+							Identity:      sibID,
+							Owner:         "owner-b",
+							TargetVersion: "v1",
 						})
 					default:
 						_, createErr = store.CreateDeleteDesire(ctx, desire.DeleteDesire{
@@ -279,8 +280,9 @@ func TestCreateReadDesire_IndependentOfExistingApply(t *testing.T) {
 	}
 
 	read, err := store.CreateReadDesire(ctx, desire.ReadDesire{
-		Identity: idRead,
-		Owner:    testOwner,
+		Identity:      idRead,
+		Owner:         testOwner,
+		TargetVersion: "v1",
 	})
 	if err != nil {
 		t.Fatalf("CreateReadDesire: %v", err)

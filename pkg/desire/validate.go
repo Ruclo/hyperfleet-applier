@@ -133,5 +133,8 @@ func (d ReadDesire) Validate() error {
 	if d.Owner == "" {
 		return errors.New("ReadDesire.Owner is required")
 	}
+	if d.TargetVersion == "" {
+		return errors.New("ReadDesire.TargetVersion is required")
+	}
 	return nil
 }

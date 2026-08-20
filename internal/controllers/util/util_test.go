@@ -1,4 +1,4 @@
-package conditions_test
+package util
 
 import (
 	"testing"
@@ -6,7 +6,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/openshift-hyperfleet/hyperfleet-applier/internal/controller/conditions"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 )
 
@@ -21,7 +20,7 @@ func successful(reason string) metav1.Condition {
 func TestWithCondition_DoesNotMutateInput(t *testing.T) {
 	in := desire.Status{}
 
-	out := conditions.WithCondition(in, successful(desire.ReasonApplied))
+	out := WithCondition(in, successful(desire.ReasonApplied))
 
 	if in.Conditions != nil {
 		t.Errorf("WithCondition mutated the input status, got conditions %+v", in.Conditions)
@@ -32,9 +31,9 @@ func TestWithCondition_DoesNotMutateInput(t *testing.T) {
 }
 
 func TestWithCondition_ReplacesSameType(t *testing.T) {
-	first := conditions.WithCondition(desire.Status{}, successful(desire.ReasonApplied))
+	first := WithCondition(desire.Status{}, successful(desire.ReasonApplied))
 
-	out := conditions.WithCondition(first, metav1.Condition{
+	out := WithCondition(first, metav1.Condition{
 		Type:   desire.TypeSuccessful,
 		Status: metav1.ConditionFalse,
 		Reason: desire.ReasonKubeAPIError,
@@ -52,32 +51,32 @@ func TestWithCondition_ReplacesSameType(t *testing.T) {
 }
 
 func TestEqual_IgnoresLastTransitionTime(t *testing.T) {
-	a := conditions.WithCondition(desire.Status{}, successful(desire.ReasonApplied))
+	a := WithCondition(desire.Status{}, successful(desire.ReasonApplied))
 
 	b := desire.Status{Conditions: append([]metav1.Condition(nil), a.Conditions...)}
 	for i := range b.Conditions {
 		b.Conditions[i].LastTransitionTime = metav1.NewTime(time.Now().Add(time.Hour))
 	}
 
-	if !conditions.Equal(a, b) {
+	if !Equal(a, b) {
 		t.Errorf("Equal(a, b) = false, want true when only LastTransitionTime differs\na=%+v\nb=%+v", a, b)
 	}
 }
 
 func TestEqual_DetectsReasonChange(t *testing.T) {
-	a := conditions.WithCondition(desire.Status{}, successful(desire.ReasonApplied))
-	b := conditions.WithCondition(desire.Status{}, successful(desire.ReasonSynced))
+	a := WithCondition(desire.Status{}, successful(desire.ReasonApplied))
+	b := WithCondition(desire.Status{}, successful(desire.ReasonSynced))
 
-	if conditions.Equal(a, b) {
+	if Equal(a, b) {
 		t.Errorf("Equal(a, b) = true, want false when Reason differs\na=%+v\nb=%+v", a, b)
 	}
 }
 
 func TestEqual_DetectsLengthChange(t *testing.T) {
 	a := desire.Status{}
-	b := conditions.WithCondition(desire.Status{}, successful(desire.ReasonApplied))
+	b := WithCondition(desire.Status{}, successful(desire.ReasonApplied))
 
-	if conditions.Equal(a, b) {
+	if Equal(a, b) {
 		t.Errorf("Equal(a, b) = true, want false when Conditions length differs\na=%+v\nb=%+v", a, b)
 	}
 }

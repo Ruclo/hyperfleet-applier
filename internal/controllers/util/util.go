@@ -1,8 +1,7 @@
-// Package conditions holds helpers for setting and comparing desire.Status
-// conditions, shared across the reconcile controllers.
-package conditions
+package util
 
 import (
+	"fmt"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -10,6 +9,16 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 )
+
+// DescribeIdentity returns a presentation-only description of the desire's
+// logical Identity for logs and errors. It is not a storage key, Redis key
+// encoding, or reusable persistence format.
+func DescribeIdentity(id desire.Identity) string {
+	return fmt.Sprintf(
+		"managementCluster=%q type=%q group=%q resource=%q namespace=%q name=%q",
+		id.ManagementCluster, id.Type, id.Group, id.Resource, id.Namespace, id.Name,
+	)
+}
 
 // WithCondition returns a copy of status with cond set, leaving the input
 // untouched. The Conditions slice is cloned so callers and stores never share

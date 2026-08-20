@@ -1,7 +1,6 @@
 # internal/controller/applydesire
 
-`Reconciler` reconciles ApplyDesires (see `pkg/desire/CLAUDE.md`) against the local kube-apiserver
-via server-side apply.
+`ApplyReconciler` reconciles ApplyDesires (see `pkg/desire/CLAUDE.md`) against the local kube-apiserver via server-side apply.
 
 `ReconcileAll` is scoped to one management cluster. It reconciles every ApplyDesire independently.
 Ordinary apply failures are recorded in status and are not returned; only non-conflict status-write

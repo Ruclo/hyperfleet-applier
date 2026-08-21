@@ -241,6 +241,20 @@ func TestReadDesireValidate_RejectsEmptyOwner(t *testing.T) {
 	}
 }
 
+func TestReadDesireValidate_RejectsEmptyTargetVersion(t *testing.T) {
+	id := validIdentity()
+	id.Type = desire.TypeRead
+	d := desire.ReadDesire{
+		Identity:      id,
+		Owner:         testOwner,
+		TargetVersion: "",
+	}
+
+	if err := d.Validate(); err == nil {
+		t.Errorf("expected ReadDesire.Validate to reject empty TargetVersion")
+	}
+}
+
 func TestReadDesireValidate_RejectsWrongIdentityType(t *testing.T) {
 	d := desire.ReadDesire{
 		Identity: validIdentity(),

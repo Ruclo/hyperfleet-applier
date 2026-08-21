@@ -47,7 +47,7 @@ type Identity struct {
 // in-progress work from failure.
 //
 //	Successful=True:  Applied, Deleted, Synced
-//	Successful=False: WaitingForDeletion, KubeAPIError, PreCheckFailed
+//	Successful=False: WaitingForDeletion, NotFound, KubeAPIError, PreCheckFailed
 const (
 	// TypeSuccessful is the single summary condition every desire carries.
 	TypeSuccessful = "Successful"
@@ -57,8 +57,9 @@ const (
 	ReasonDeleted = "Deleted"
 	ReasonSynced  = "Synced"
 
-	// In-progress reason (Successful=False, not an error).
+	// In-progress reasons (Successful=False, not an error).
 	ReasonWaitingForDeletion = "WaitingForDeletion"
+	ReasonNotFound           = "NotFound"
 
 	// Failure reasons (Successful=False).
 	ReasonKubeAPIError   = "KubeAPIError"
@@ -103,9 +104,17 @@ type ReadDesire struct {
 	Identity Identity `json:"identity"`
 	Owner    string   `json:"owner"`
 	// OriginID identifies the originating HyperFleet API resource.
-	OriginID string     `json:"originId,omitempty"`
-	Status   ReadStatus `json:"status"`
-	Version  int64      `json:"version"`
+	OriginID string `json:"originId,omitempty"`
+	// TargetVersion is the Kubernetes API version to read this resource as
+	// (e.g. "v1", "v2beta1") - paired with Identity.Group to determine the
+	// full apiVersion to observe (e.g. Group "apps" + TargetVersion "v1" =
+	// "apps/v1"). Required: unlike ApplyDesire (which decodes a GVK from
+	// KubeContent), a ReadDesire has no manifest to derive this from, so it
+	// must be set explicitly rather than resolved from the cluster's
+	// currently-preferred version.
+	TargetVersion string     `json:"targetVersion"`
+	Status        ReadStatus `json:"status"`
+	Version       int64      `json:"version"`
 }
 
 // ReadStatus extends Status with KubeContent to mirror the current state

@@ -39,13 +39,14 @@ type Client interface {
 // resourceRecord is one serialized desire keyed by full Identity.
 // Apply uses Apply+Status, Delete uses Status, and Read uses ReadStatus.
 type resourceRecord struct {
-	Identity   desire.Identity   `json:"identity"`
-	Apply      *desire.ApplySpec `json:"apply,omitempty"`
-	OriginID   string            `json:"originId,omitempty"`
-	Owner      string            `json:"owner"`
-	Status     desire.Status     `json:"status"`
-	ReadStatus desire.ReadStatus `json:"readStatus"`
-	Version    int64             `json:"version"`
+	Apply         *desire.ApplySpec `json:"apply,omitempty"`
+	Identity      desire.Identity   `json:"identity"`
+	OriginID      string            `json:"originId,omitempty"`
+	Owner         string            `json:"owner"`
+	TargetVersion string            `json:"targetVersion,omitempty"`
+	ReadStatus    desire.ReadStatus `json:"readStatus"`
+	Status        desire.Status     `json:"status"`
+	Version       int64             `json:"version"`
 }
 
 // Store is a Redis-backed SpecStore and StatusStore.
@@ -449,10 +450,11 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 			return nil, nil, desire.ErrAlreadyExists
 		}
 		return &resourceRecord{
-			Identity: d.Identity,
-			Owner:    d.Owner,
-			OriginID: d.OriginID,
-			Version:  1,
+			Identity:      d.Identity,
+			Owner:         d.Owner,
+			OriginID:      d.OriginID,
+			TargetVersion: d.TargetVersion,
+			Version:       1,
 		}, nil, nil
 	})
 	if err != nil {
@@ -738,10 +740,11 @@ func (s *Store) projectReadDesire(rec *resourceRecord) desire.ReadDesire {
 		return desire.ReadDesire{}
 	}
 	return desire.ReadDesire{
-		Identity: rec.Identity,
-		Owner:    rec.Owner,
-		OriginID: rec.OriginID,
-		Version:  rec.Version,
-		Status:   desire.CloneReadStatus(rec.ReadStatus),
+		Identity:      rec.Identity,
+		Owner:         rec.Owner,
+		OriginID:      rec.OriginID,
+		TargetVersion: rec.TargetVersion,
+		Version:       rec.Version,
+		Status:        desire.CloneReadStatus(rec.ReadStatus),
 	}
 }

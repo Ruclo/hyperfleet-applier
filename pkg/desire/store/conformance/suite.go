@@ -19,6 +19,7 @@ const (
 	kubeContentV1        = `{"v":1}`
 	kubeContentV2        = `{"v":2}`
 	mutatedStatusMessage = "mutated"
+	testTargetVersion    = "v1"
 )
 
 func identity(managementCluster string, typ desire.DesireType, name string) desire.Identity {
@@ -49,8 +50,9 @@ func newDeleteDesire(id desire.Identity, owner string) desire.DeleteDesire {
 
 func newReadDesire(id desire.Identity, owner string) desire.ReadDesire {
 	return desire.ReadDesire{
-		Identity: id,
-		Owner:    owner,
+		Identity:      id,
+		Owner:         owner,
+		TargetVersion: testTargetVersion,
 	}
 }
 

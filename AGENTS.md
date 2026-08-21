@@ -13,7 +13,8 @@ Run `make help` for the full target list (build, test, lint, fmt, tidy, etc.). N
 obvious from that listing:
 
 - Run a single test: `go test ./pkg/desire/... -run TestName -v`.
-- `make test-envtest` runs the `envtest`-tagged tests (`internal/controllers/applydesire/envtest_test.go`) against a real
+- `make test-envtest` runs the `envtest`-tagged tests
+  against a real
   kube-apiserver via `sigs.k8s.io/controller-runtime/pkg/envtest`. These are excluded from the
   normal `make test` run (no `-tags envtest`), so `go test ./...` alone does not cover them.
 - Tool binaries (golangci-lint, setup-envtest) are version-pinned in `tools/go.mod`, a separate

@@ -59,11 +59,9 @@ func (c *Controller) sync(ctx context.Context, key desire.Identity) error {
 }
 
 // applyStatus fetches the current ReadDesire for id, computes its new status
-// via compute (given the fetched desire, both for its current status as the
-// and for its declared TargetVersion),
-// and persists it via UpdateReadDesireStatus if it changed. A desire deleted
-// since it was enqueued (ErrNotFound) is a benign no-op, not an error - its
-// informer will be torn down on the next poll tick regardless.
+// via compute and persists it via UpdateReadDesireStatus if it changed.
+// A desire deleted since it was enqueued (ErrNotFound) is a benign no-op,
+// not an error - its informer will be torn down on the next poll tick regardless.
 //
 // This is the one place status is ever written, used both by sync (per-key,
 // workqueue-driven) and by pollOnce (per-tick, for desires whose GVR could
@@ -101,9 +99,13 @@ func (c *Controller) observe(
 ) desire.ReadStatus {
 	lister, ok := c.informers.Lister(key)
 	if !ok {
-		// No informer running for this key yet (e.g. a poll tick hasn't
-		// started it, or it raced with a concurrent Reconcile teardown).
-		// Treat the same as not-found rather than erroring.
+		// No informer running for this key. InformerManager.start always
+		// writes m.informers[key] before wiring anything that could enqueue
+		// it (event handlers only fire once informer.Run - spawned after the
+		// write - actually starts), so this can only be a teardown race: the
+		// key was enqueued while its informer was running, then Reconcile
+		// removed the desire (it's gone from the store) before this worker
+		// got to it. Treat the same as not-found rather than erroring.
 		return notFound(current)
 	}
 

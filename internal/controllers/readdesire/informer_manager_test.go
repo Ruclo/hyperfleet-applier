@@ -10,19 +10,27 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 )
 
+// newTestInformerManager builds an InformerManager backed by a fresh fake
+// dynamic client and workqueue, with automatic shutdown registered - the
+// 3-line preamble every test below otherwise repeats.
+func newTestInformerManager(t *testing.T) (*InformerManager, workqueue.TypedRateLimitingInterface[desire.Identity]) {
+	t.Helper()
+	dyn := newFakeDynamicClient(t)
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
+	m := newInformerManager(dyn, queue)
+	t.Cleanup(m.shutdownAll)
+	return m, queue
+}
+
 // TestInformerManager_ReconcileStartsAndStopsInformers proves Reconcile's
 // bookkeeping is synchronous: a key becomes visible via Lister as soon as
 // Reconcile returns (the map write happens before start's background
 // goroutines are spawned), and disappears synchronously once no longer
 // wanted, without needing to wait for informer sync.
 func TestInformerManager_ReconcileStartsAndStopsInformers(t *testing.T) {
-	dyn := newFakeDynamicClient(t)
-	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
-	m := newInformerManager(dyn, queue)
-	t.Cleanup(m.shutdownAll)
+	m, _ := newTestInformerManager(t)
 
-	id := readIdentity("default", "cm-lifecycle")
-	key := id
+	key := readIdentity("default", "cm-lifecycle")
 	target := informerTarget{gvr: configMapGVR, namespace: "default", name: "cm-lifecycle"}
 	seen := map[desire.Identity]struct{}{key: {}}
 	want := map[desire.Identity]informerTarget{key: target}
@@ -44,13 +52,9 @@ func TestInformerManager_ReconcileStartsAndStopsInformers(t *testing.T) {
 // -running informer - only a key missing from seen entirely (the desire
 // itself is gone) should.
 func TestInformerManager_TransientResolveFailureDoesNotStopInformer(t *testing.T) {
-	dyn := newFakeDynamicClient(t)
-	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
-	m := newInformerManager(dyn, queue)
-	t.Cleanup(m.shutdownAll)
+	m, _ := newTestInformerManager(t)
 
-	id := readIdentity("default", "cm-flaky-gvr")
-	key := id
+	key := readIdentity("default", "cm-flaky-gvr")
 	target := informerTarget{gvr: configMapGVR, namespace: "default", name: "cm-flaky-gvr"}
 
 	m.Reconcile(map[desire.Identity]struct{}{key: {}}, map[desire.Identity]informerTarget{key: target})
@@ -76,14 +80,10 @@ func TestInformerManager_TransientResolveFailureDoesNotStopInformer(t *testing.T
 // created.
 func TestInformerManager_StartEnqueuesKeyEvenWhenTargetAbsent(t *testing.T) {
 	const namespace = "default"
-	dyn := newFakeDynamicClient(t) // nothing seeded: the target doesn't exist
-	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
-	m := newInformerManager(dyn, queue)
-	t.Cleanup(m.shutdownAll)
+	m, queue := newTestInformerManager(t) // nothing seeded: the target doesn't exist
 	t.Cleanup(queue.ShutDown)
 
-	id := readIdentity(namespace, "cm-absent")
-	key := id
+	key := readIdentity(namespace, "cm-absent")
 	target := informerTarget{gvr: configMapGVR, namespace: namespace, name: "cm-absent"}
 
 	m.Reconcile(map[desire.Identity]struct{}{key: {}}, map[desire.Identity]informerTarget{key: target})
@@ -113,13 +113,9 @@ func TestInformerManager_StartEnqueuesKeyEvenWhenTargetAbsent(t *testing.T) {
 // stale-version informer running indefinitely.
 func TestInformerManager_RebuildsInformerOnVersionChange(t *testing.T) {
 	const namespace = "default"
-	dyn := newFakeDynamicClient(t)
-	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
-	m := newInformerManager(dyn, queue)
-	t.Cleanup(m.shutdownAll)
+	m, _ := newTestInformerManager(t)
 
-	id := readIdentity(namespace, "cm-version-change")
-	key := id
+	key := readIdentity(namespace, "cm-version-change")
 	seen := map[desire.Identity]struct{}{key: {}}
 
 	v1GVR := configMapGVR

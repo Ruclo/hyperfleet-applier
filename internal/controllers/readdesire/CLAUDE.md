@@ -131,6 +131,10 @@ from the cache alone:
   cache lag, so it's escalated to a real `KubeAPIError` (or `NotFound`) status write, unlike the
   cache-only check which never reaches status at all.
 
+The absence of a CAS check in the store, implies the possibility of mismatch between targetVersion and the
+version from apiVersion of a manifest, due to the
+GET -> MUTATE -> UPDATE nature.
+
 ## Informer lifecycle (`InformerManager`)
 
 `dynamicinformer`'s shared-factory `Start`/`Shutdown` operate on every registered GVR at once - there
@@ -198,3 +202,18 @@ as any other `sync` error).
 - **Per-GVR/per-desire informer restart on transient list/watch errors** relies entirely on the
   reflector's own built-in retry (client-go `cache.Reflector`); this package layers nothing
   additional on top.
+
+envtest coverage (`envtest_test.go`, build tag `envtest`, run via `make test-envtest`) is
+deliberately narrow, but broader than `applydesire`'s "only what a fake client structurally can't
+simulate" - `dynamicfake` doesn't just lack one specific mechanism here, it silently ignores the
+`metadata.name` field selector every informer in this package is scoped by, which is the
+load-bearing assumption the whole "one informer per `ReadDesire`" design rests on.
+`TestEnvtest_FullLifecycle` covers, against a real `Run`-driven `Controller` and apiserver: a
+target that doesn't exist yet
+reporting `NotFound`; creation transitioning it to `Synced`; an unrelated object in the same
+namespace/GVR never affecting it (the actual field-selector isolation proof); a real update being
+reflected; and deletion reporting `NotFound` again. GVR-resolution/status-computation branches
+(`PreCheckFailed`, `KubeAPIError`, the `TargetVersion` mismatch fallback, retry dispatch, and the
+`TargetVersion`-change informer rebuild) are pure Go control flow with no apiserver-specific
+behavior involved, already covered by the unit/table-driven tests, and are deliberately not
+repeated here. Excluded from the normal `go test ./...` run.

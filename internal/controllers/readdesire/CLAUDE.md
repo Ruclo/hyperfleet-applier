@@ -58,10 +58,7 @@ object stays absent.
 A `ReadDesire`'s `Identity` carries `Group`+`Resource` only - no `Kind`/`Version` (unlike
 `ApplyDesire`, which decodes a GVK from `KubeContent`); `TargetVersion` (see below) supplies the
 missing piece explicitly, rather than it being guessed or resolved from the cluster's preferred
-version. `resolveGVR` resolves the now fully-specified GVR via a single `meta.RESTMapper.ResourceFor`
-call - deliberately no `IsNoMatchError` -> `Reset()` -> retry, unlike
-`applydesire.applyToCluster`'s `RESTMapping` call; mapper freshness is left to whatever owns the
-shared mapper instance instead of being retried inline here.
+version. `resolveGVR` resolves the now fully-specified GVR via a single `IsNoMatchError` -> `Reset()` -> retry
 
 **`resolveGVR` has two call sites, and a failure means something different at each:**
 
@@ -77,11 +74,6 @@ shared mapper instance instead of being retried inline here.
   regression rather than an up-front precheck - it's reported as `KubeAPIError`, not
   `PreCheckFailed`.
 
-Because of the second call site, `resolveGVR` is no longer guaranteed to run at most once per
-desire per poll tick - a desire stuck on the mismatch path re-resolves on every sync attempt for it.
-This makes the "no `Reset()`-on-every-miss" rationale apply even more strongly here: an inline
-`Reset()`-on-miss policy would mean a persistently mismatched desire triggers a full discovery
-re-fetch on every single sync attempt, not just every poll tick.
 
 **`pollOnce` distinguishes "desire still listed" (`seen`) from "GVR resolved this tick" (`want`) when
 calling `InformerManager.Reconcile`, and this distinction is load-bearing, not cosmetic.** A
@@ -131,10 +123,6 @@ from the cache alone:
   `observeLive`, or the object being genuinely gone - `NotFound`). This is no longer explainable as
   cache lag, so it's escalated to a real `KubeAPIError` (or `NotFound`) status write, unlike the
   cache-only check which never reaches status at all.
-
-The absence of a CAS check in the store, implies the possibility of mismatch between targetVersion and the
-version from apiVersion of a manifest, due to the
-GET -> MUTATE -> UPDATE nature.
 
 ## Informer lifecycle (`InformerManager`)
 
@@ -203,18 +191,3 @@ as any other `sync` error).
 - **Per-GVR/per-desire informer restart on transient list/watch errors** relies entirely on the
   reflector's own built-in retry (client-go `cache.Reflector`); this package layers nothing
   additional on top.
-
-envtest coverage (`envtest_test.go`, build tag `envtest`, run via `make test-envtest`) is
-deliberately narrow, but broader than `applydesire`'s "only what a fake client structurally can't
-simulate" - `dynamicfake` doesn't just lack one specific mechanism here, it silently ignores the
-`metadata.name` field selector every informer in this package is scoped by, which is the
-load-bearing assumption the whole "one informer per `ReadDesire`" design rests on.
-`TestEnvtest_FullLifecycle` covers, against a real `Start`-driven `Controller` and apiserver: a
-target that doesn't exist yet
-reporting `NotFound`; creation transitioning it to `Synced`; an unrelated object in the same
-namespace/GVR never affecting it (the actual field-selector isolation proof); a real update being
-reflected; and deletion reporting `NotFound` again. GVR-resolution/status-computation branches
-(`PreCheckFailed`, `KubeAPIError`, the `TargetVersion` mismatch fallback, retry dispatch, and the
-`TargetVersion`-change informer rebuild) are pure Go control flow with no apiserver-specific
-behavior involved, already covered by the unit/table-driven tests, and are deliberately not
-repeated here. Excluded from the normal `go test ./...` run.

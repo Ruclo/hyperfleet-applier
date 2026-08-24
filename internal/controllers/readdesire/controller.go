@@ -121,7 +121,15 @@ func (c *Controller) Start(ctx context.Context) error {
 
 	pollErr := c.runPollLoop(ctx) // blocks until ctx.Done()
 
-	c.queue.ShutDownWithDrain()
+	// Plain ShutDown, not ShutDownWithDrain: the latter is only overridden on
+	// the base FIFO queue, not on the rate-limiting/delaying wrapper this
+	// queue actually is, so it would never close that wrapper's own stopCh -
+	// leaking its internal waitingLoop goroutine (used by
+	// AddAfter/AddRateLimited) forever. ShutDown does close it. The
+	// wg.Wait() below already blocks until every worker has drained the
+	// queue and returned, which is the only thing ShutDownWithDrain would
+	// have added.
+	c.queue.ShutDown()
 	c.informers.shutdownAll()
 	wg.Wait()
 	if errors.Is(pollErr, context.Canceled) || errors.Is(pollErr, context.DeadlineExceeded) {
@@ -262,5 +270,13 @@ func (c *Controller) pollOnce(ctx context.Context) error {
 // resolved/guessed, since the version is now explicit.
 func (c *Controller) resolveGVR(group, targetVersion, resource string) (schema.GroupVersionResource, error) {
 	partial := schema.GroupVersionResource{Group: group, Version: targetVersion, Resource: resource}
-	return c.mapper.ResourceFor(partial)
+	gvr, err := c.mapper.ResourceFor(partial)
+	if err != nil && meta.IsNoMatchError(err) {
+		// The resource may have just been installed (e.g. a new CRD) after
+		// the mapper's discovery cache was already populated - reset and
+		// retry once before giving up.
+		c.mapper.Reset()
+		gvr, err = c.mapper.ResourceFor(partial)
+	}
+	return gvr, err
 }

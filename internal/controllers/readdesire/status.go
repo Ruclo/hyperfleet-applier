@@ -21,8 +21,8 @@ func synced(status desire.ReadStatus, kubeContent []byte) desire.ReadStatus {
 
 // notFound returns a copy of status with the Successful condition set to
 // False, reason NotFound, and KubeContent cleared: the target does not
-// currently exist, which is not an error - the next observed creation
-// resolves it.
+// currently exist, so there is nothing to mirror - the next observed
+// creation resolves it.
 func notFound(status desire.ReadStatus) desire.ReadStatus {
 	return withReadCondition(status, metav1.Condition{
 		Type:   desire.TypeSuccessful,

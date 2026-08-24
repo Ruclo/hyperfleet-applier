@@ -175,6 +175,15 @@ func (r *ApplyReconciler) applyToCluster(ctx context.Context, d desire.ApplyDesi
 
 	gvk := obj.GroupVersionKind()
 	mapping, err := r.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil && meta.IsNoMatchError(err) {
+		// The resource may have just been installed (e.g. a new CRD) after
+		// the mapper's discovery cache was already populated - reset and
+		// retry once before giving up.
+		if resettable, ok := r.mapper.(meta.ResettableRESTMapper); ok {
+			resettable.Reset()
+		}
+		mapping, err = r.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	}
 	if err != nil {
 		return preCheckFailed(d.Status, fmt.Sprintf("apply: no resource mapping for %s: %v", gvk, err)), nil
 	}

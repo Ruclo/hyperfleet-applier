@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -41,19 +42,24 @@ type trackedInformer struct {
 // ReadDesire currently known to Controller. When a desire drops out of the
 // wanted set (it was deleted), Reconcile stops that desire's informer only.
 type InformerManager struct {
-	dyn       dynamic.Interface
-	queue     workqueue.TypedRateLimitingInterface[desire.Identity]
-	informers map[desire.Identity]*trackedInformer
-	mu        sync.Mutex
+	dyn         dynamic.Interface
+	queue       workqueue.TypedRateLimitingInterface[desire.Identity]
+	informers   map[desire.Identity]*trackedInformer
+	syncTimeout time.Duration
+	mu          sync.Mutex
 }
+
+// defaultInformerSyncTimeout is the timeout period for informer's cache resync
+const defaultInformerSyncTimeout = 30 * time.Second
 
 func newInformerManager(
 	dyn dynamic.Interface, queue workqueue.TypedRateLimitingInterface[desire.Identity],
 ) *InformerManager {
 	return &InformerManager{
-		dyn:       dyn,
-		queue:     queue,
-		informers: make(map[desire.Identity]*trackedInformer),
+		dyn:         dyn,
+		queue:       queue,
+		informers:   make(map[desire.Identity]*trackedInformer),
+		syncTimeout: defaultInformerSyncTimeout,
 	}
 }
 
@@ -148,7 +154,8 @@ func (m *InformerManager) Lister(key desire.Identity) (cache.GenericLister, bool
 // here) so that starting many new informers in one Reconcile call doesn't
 // serialize on each other's initial List completing; its failure can't be
 // returned here (this function has already returned by the time it runs) so
-// it's log-only.
+// it's log-only, except for the syncTimeout case below, which enqueues key
+// anyway.
 func (m *InformerManager) start(key desire.Identity, target informerTarget) error {
 	tweakListOptions := func(opts *metav1.ListOptions) {
 		opts.FieldSelector = fields.OneTermEqualSelector("metadata.name", target.name).String()
@@ -170,18 +177,50 @@ func (m *InformerManager) start(key desire.Identity, target informerTarget) erro
 	m.informers[key] = &trackedInformer{gvr: target.gvr, informer: informer, lister: gi.Lister(), stopCh: stopCh}
 	go informer.Run(stopCh)
 	go func() {
-		if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
-			slog.Error("readdesire: informer cache sync did not complete before shutdown",
-				"namespace", key.Namespace, "name", key.Name)
+		// syncStopCh closes on real teardown (stopCh) or after syncTimeout,
+		// whichever comes first, so WaitForCacheSync below can never block
+		// longer than syncTimeout
+		syncStopCh := timeoutOrStop(stopCh, m.syncTimeout)
+		if !cache.WaitForCacheSync(syncStopCh, informer.HasSynced) {
+			select {
+			case <-stopCh:
+				// Real shutdown/teardown, not a timeout - the informer never
+				// got the chance to sync before it was torn down.
+				slog.Error("readdesire: informer cache sync did not complete before shutdown",
+					"namespace", key.Namespace, "name", key.Name)
+			default:
+				// syncTimeout elapsed but the informer is still running (and
+				// keeps retrying in the background regardless) - enqueue
+				// anyway rather than waiting forever. sync will read this
+				// key's still-empty cache and report ReasonNotFound
+				slog.Error("readdesire: informer cache did not sync within timeout, reporting anyway",
+					"namespace", key.Namespace, "name", key.Name, "timeout", m.syncTimeout)
+				m.queue.Add(key)
+			}
 			return
 		}
-		// AddFunc only fires if the target exists - Kubernetes has no event for
-		// "object still absent", so a target that doesn't exist yet would
-		// otherwise never get an initial sync at all (not even a NotFound
-		// write) until/unless it's later created.
+		// Enqueue once to let the worker report back to the desire's status
 		m.queue.Add(key)
 	}()
 	return nil
+}
+
+// timeoutOrStop returns a channel that closes when stopCh closes or after
+// timeout elapses, whichever comes first - so a WaitForCacheSync call given
+// this channel can never block longer than timeout, regardless of whether
+// the real informer ever gets torn down. It only ever reads from stopCh
+// (never closes it) and closes a separate, freshly created channel instead,
+// so it has no effect on stopCh or the informer's own lifecycle.
+func timeoutOrStop(stopCh <-chan struct{}, timeout time.Duration) <-chan struct{} {
+	merged := make(chan struct{})
+	go func() {
+		defer close(merged)
+		select {
+		case <-stopCh:
+		case <-time.After(timeout):
+		}
+	}()
+	return merged
 }
 
 // shutdownAll stops every currently-running informer. Called once, from

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -78,14 +79,14 @@ func TestEnvtest_UnchangedReconcileIsClusterNoOp(t *testing.T) {
 	store := memory.New()
 	const name = "cm-envtest-noop"
 
-	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
+	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, time.Hour)
 
 	id := applyIdentity("", "configmaps", defaultNamespace, name)
 	content := newConfigMapContent(t, name, defaultNamespace, map[string]string{"k": "v"})
 	seedApplyDesire(t, store, id, "owner-1", content)
 
-	if err := r.ReconcileAll(ctx); err != nil {
-		t.Fatalf("ReconcileAll() [pass 1] error = %v, want nil", err)
+	if err := r.reconcileAll(ctx); err != nil {
+		t.Fatalf("reconcileAll() [pass 1] error = %v, want nil", err)
 	}
 
 	obj1, err := envDynamicClient.Resource(configMapGVR).Namespace(defaultNamespace).Get(ctx, name, metav1.GetOptions{})
@@ -97,8 +98,8 @@ func TestEnvtest_UnchangedReconcileIsClusterNoOp(t *testing.T) {
 		t.Fatalf("resourceVersion is empty after pass 1; object was not created as expected")
 	}
 
-	if rcErr := r.ReconcileAll(ctx); rcErr != nil {
-		t.Fatalf("ReconcileAll() [pass 2] error = %v, want nil", rcErr)
+	if rcErr := r.reconcileAll(ctx); rcErr != nil {
+		t.Fatalf("reconcileAll() [pass 2] error = %v, want nil", rcErr)
 	}
 
 	obj2, err := envDynamicClient.Resource(configMapGVR).Namespace(defaultNamespace).Get(ctx, name, metav1.GetOptions{})
@@ -139,7 +140,7 @@ func TestEnvtest_ForceReclaimsContestedField(t *testing.T) {
 	}
 
 	store := memory.New()
-	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
+	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, time.Hour)
 
 	content, err := json.Marshal(map[string]interface{}{
 		fieldAPIVersion: "v1",
@@ -157,8 +158,8 @@ func TestEnvtest_ForceReclaimsContestedField(t *testing.T) {
 	id := applyIdentity("", "configmaps", defaultNamespace, name)
 	seedApplyDesire(t, store, id, "owner-1", content)
 
-	if rcErr := r.ReconcileAll(ctx); rcErr != nil {
-		t.Fatalf("ReconcileAll() error = %v, want nil", rcErr)
+	if rcErr := r.reconcileAll(ctx); rcErr != nil {
+		t.Fatalf("reconcileAll() error = %v, want nil", rcErr)
 	}
 
 	got, err := envDynamicClient.Resource(configMapGVR).Namespace(defaultNamespace).Get(ctx, name, metav1.GetOptions{})
@@ -189,7 +190,7 @@ func TestEnvtest_ClusterScopedStrayNamespace(t *testing.T) {
 	const name = "cr-envtest-stray-ns"
 
 	store := memory.New()
-	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster)
+	r := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, time.Hour)
 
 	id := applyIdentity(rbacGroup, "clusterroles", "", name)
 	content := newClusterRoleContentWithNamespace(t, name, "stray-namespace")
@@ -199,8 +200,8 @@ func TestEnvtest_ClusterScopedStrayNamespace(t *testing.T) {
 		_ = envDynamicClient.Resource(clusterRoleGVR).Delete(ctx, name, metav1.DeleteOptions{})
 	})
 
-	if err := r.ReconcileAll(ctx); err != nil {
-		t.Fatalf("ReconcileAll() error = %v, want nil", err)
+	if err := r.reconcileAll(ctx); err != nil {
+		t.Fatalf("reconcileAll() error = %v, want nil", err)
 	}
 
 	got, err := store.GetApplyDesire(ctx, id)

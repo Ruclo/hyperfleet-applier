@@ -25,6 +25,28 @@ make lint
 
 Run `make help` for the full list of targets.
 
+### Run the applier
+
+The binary follows the same command and configuration conventions as the other HyperFleet services:
+
+```bash
+make run
+```
+
+Override the default configuration path with `make run CONFIG=/path/to/applier.yaml`. The shared
+Kubernetes discovery cache is invalidated using `discovery_refresh_interval`, allowing newly
+installed CRDs to be reconciled without restarting the applier. All three controllers use
+`poll_interval`.
+
+`make run` uses `$KUBECONFIG` when set, otherwise `$HOME/.kube/config`. Override it with
+`make run KUBE_CONFIG_PATH=/path/to/kubeconfig`. Redis must already be reachable at the URL in the
+configuration file (or supplied through `HYPERFLEET_REDIS_URL`).
+
+Configuration precedence follows the HyperFleet convention: command-line flags, then
+`HYPERFLEET_*` environment variables, then YAML, then defaults. Use
+`bin/hyperfleet-applier config-dump --config configs/applier.yaml` to inspect the merged,
+redacted configuration.
+
 ### Package layout
 
 | Package | Description |

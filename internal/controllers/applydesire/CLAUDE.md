@@ -2,7 +2,9 @@
 
 `ApplyReconciler` reconciles ApplyDesires (see `pkg/desire/CLAUDE.md`) against the local kube-apiserver via server-side apply.
 
-`ReconcileAll` is scoped to one management cluster. It reconciles every ApplyDesire independently.
+`Start` owns the fixed-cadence polling loop for one management cluster. It calls `reconcileAll`
+immediately, then at its host-configured interval, and returns nil when its context is canceled. Each private
+`reconcileAll` pass reconciles every ApplyDesire independently.
 Ordinary apply failures are recorded in status and are not returned; only non-conflict status-write
 failures from individual reconciliations are joined via `errors.Join(...)`. It depends on narrow
 unexported interfaces (`specLister`, `statusWriter`), not the full store interfaces.
@@ -28,17 +30,17 @@ Per desire, `reconcileOne`/`applyToCluster`:
    `d.Identity` (name/namespace), not the raw manifest coordinates.
 5. Write the resulting condition back through `StatusStore.UpdateApplyDesireStatus`, using the
    desire's `Version` read at list time. A `ErrVersionConflict` here means spec/status moved since
-   `ListApplyDesires` - treated as a benign race, not an error; the next `ReconcileAll` pass retries.
+   `ListApplyDesires` - treated as a benign race, not an error; the next `reconcileAll` pass retries.
 
 The reconciler reads intent and writes status only. `conditions.Equal` (ignoring
 `LastTransitionTime`) suppresses no-op status writes.
 
 ## Operational semantics (MVP)
 
-- **Polling only:** `ReconcileAll` has no internal workqueue, rate limiter, or per-desire backoff.
-  The hosting binary must enforce a finite reconciliation cadence and configure client-side
-  QPS/burst (or equivalent workqueue backoff) so unchanged desires cannot generate unbounded
-  SSA traffic. `ReconcileAll` itself is unchanged.
+- **Polling only:** `Start` provides the finite reconciliation cadence; `reconcileAll` has no
+  internal workqueue, rate limiter, or per-desire backoff. The hosting binary must still configure
+  client-side QPS/burst (or equivalent workqueue backoff) so unchanged desires cannot generate
+  unbounded SSA traffic.
 - **Cost per tick:** every listed desire gets a full SSA round-trip each pass, even when spec and
   cluster are unchanged. Unchanged reconciles suppress the status-store write (and envtest proves a
   true cluster no-op on `resourceVersion`), but not the apiserver call.

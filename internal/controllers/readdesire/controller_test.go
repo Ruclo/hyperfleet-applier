@@ -187,7 +187,47 @@ func (e erroringSpecLister) ListReadDesires(context.Context, string) ([]desire.R
 	return nil, e.err
 }
 
+type notifyingSpecLister struct {
+	called chan<- struct{}
+}
+
+func (n notifyingSpecLister) ListReadDesires(context.Context, string) ([]desire.ReadDesire, error) {
+	n.called <- struct{}{}
+	return nil, nil
+}
+
 // ---- pollOnce ---------------------------------------------------------
+
+func TestStart_PollsImmediatelyAndStopsCleanly(t *testing.T) {
+	called := make(chan struct{}, 1)
+	store := memory.New()
+	c := New(
+		notifyingSpecLister{called: called}, store, newFakeDynamicClient(t), newTestMapper(),
+		testManagementCluster, time.Hour,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Start(ctx)
+	}()
+
+	select {
+	case <-called:
+		// The first poll ran without waiting for the one-hour ticker.
+	case <-time.After(time.Second):
+		t.Fatal("Start did not begin a poll immediately")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() error = %v, want nil after caller cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not stop after context cancellation")
+	}
+}
 
 // TestPollOnce_UnresolvableGVRRecordsPreCheckFailed proves that a ReadDesire
 // whose Group/Resource can never be mapped to a real GroupVersionResource
@@ -200,7 +240,7 @@ func TestPollOnce_UnresolvableGVRRecordsPreCheckFailed(t *testing.T) {
 	id := readIdentity("default", "cm-bad-gvr")
 	seedReadDesire(t, store, id, "owner-1")
 
-	c := NewController(store, store, newFakeDynamicClient(t), newNoMatchMapper(), testManagementCluster, time.Second)
+	c := New(store, store, newFakeDynamicClient(t), newNoMatchMapper(), testManagementCluster, time.Second)
 
 	c.pollOnce(ctx)
 
@@ -227,7 +267,7 @@ func TestPollOnce_ValidDesireStartsInformer(t *testing.T) {
 	id := readIdentity("default", "cm-happy-path")
 	seedReadDesire(t, store, id, "owner-1")
 
-	c := NewController(store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
+	c := New(store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
@@ -247,7 +287,7 @@ func TestPollOnce_DeletedDesireStopsInformer(t *testing.T) {
 	id := readIdentity("default", "cm-teardown")
 	created := seedReadDesire(t, store, id, "owner-1")
 
-	c := NewController(store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
+	c := New(store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
@@ -273,7 +313,7 @@ func TestPollOnce_ListReadDesiresFailureIsLogAndReturn(t *testing.T) {
 	counting := &countingStatusStore{statusStore: memory.New()}
 	spec := erroringSpecLister{err: errors.New("store unavailable")}
 
-	c := NewController(spec, counting, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
+	c := New(spec, counting, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
@@ -300,7 +340,7 @@ func TestPollOnce_TargetVersionChangeRebuildsInformerEndToEnd(t *testing.T) {
 		t.Fatalf("CreateReadDesire: %v", err)
 	}
 
-	c := NewController(
+	c := New(
 		store, store, newMultiVersionFakeDynamicClient(t), newMultiVersionTestMapper(), testManagementCluster, time.Second,
 	)
 	t.Cleanup(c.informers.shutdownAll)

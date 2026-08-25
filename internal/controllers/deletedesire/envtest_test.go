@@ -86,6 +86,7 @@ func TestEnvtest_DeletePod_Success(t *testing.T) {
 		dynClient,
 		mapper,
 		"test-cluster",
+		time.Hour,
 	)
 
 	// Create a DeleteDesire
@@ -190,6 +191,7 @@ func TestEnvtest_DeletePod_WithFinalizers(t *testing.T) {
 		dynClient,
 		mapper,
 		"test-cluster",
+		time.Hour,
 	)
 
 	// Create a DeleteDesire
@@ -288,6 +290,7 @@ func TestEnvtest_DeleteNonExistentPod(t *testing.T) {
 		dynClient,
 		mapper,
 		"test-cluster",
+		time.Hour,
 	)
 
 	// Create a DeleteDesire for a non-existent pod

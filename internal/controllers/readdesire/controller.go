@@ -4,7 +4,7 @@
 // feeds a workqueue from each informer's event handlers.
 //
 // A Controller is bound to one management-cluster partition and is a long-running daemon:
-// Run starts a workqueue, a worker pool, and the periodic informer-lifecycle
+// Start starts a workqueue, a worker pool, and the periodic informer-lifecycle
 // poll loop together and blocks until ctx is canceled. It owns its own poll
 // ticker because it coordinates three concurrently-running things.
 //
@@ -74,14 +74,14 @@ type Controller struct {
 	pollInterval      time.Duration
 }
 
-// NewController builds a Controller bound to one partition (managementCluster).
+// New builds a Controller bound to one partition (managementCluster).
 // dyn is the dynamic client used to build per-desire informers; mapper
 // resolves a partial (Group, Resource) to its full, versioned
 // GroupVersionResource - see resolveGVR for why this differs from
 // applydesire's Kind-based RESTMapping. pollInterval controls how often
 // ListReadDesires is called to discover which ReadDesires currently exist, so
 // their informers can be started or stopped accordingly.
-func NewController(
+func New(
 	spec specLister,
 	status statusStore,
 	dyn dynamic.Interface,
@@ -104,13 +104,13 @@ func NewController(
 	}
 }
 
-// Run starts the worker pool, then the poll loop, and blocks until ctx is
+// Start starts the worker pool, then the poll loop, and blocks until ctx is
 // canceled. It returns nil on clean shutdown. The workqueue is created in
-// NewController; Run starts, in order, (1) the worker pool draining it, then
+// New; Start starts, in order, (1) the worker pool draining it, then
 // (2) the poll loop that drives the InformerManager - this ordering means
 // workers are ready to drain the queue before any informer can enqueue into
 // it.
-func (c *Controller) Run(ctx context.Context) error {
+func (c *Controller) Start(ctx context.Context) error {
 	var wg sync.WaitGroup
 
 	for range workerCount {
@@ -135,7 +135,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	return pollErr
 }
 
-// runPollLoop calls ListReadDesires every pollInterval and reconciles the
+// runPollLoop calls ListReadDesires immediately, then every pollInterval, and reconciles the
 // running per-desire informer set against it: an informer is started for
 // every currently-listed ReadDesire that doesn't have one yet, and stopped
 // for every running informer whose ReadDesire is no longer listed. It does
@@ -147,17 +147,16 @@ func (c *Controller) runPollLoop(ctx context.Context) error {
 	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
 	for {
+		// pollOnce only ever returns non-nil for ctx cancellation hit
+		// mid-tick (see its own abort checks below).
+		if err := c.pollOnce(ctx); err != nil {
+			return err
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			// pollOnce only ever returns non-nil for ctx cancellation hit
-			// mid-tick (see its own abort checks below) - propagate
-			// immediately instead of waiting for this select to notice
-			// ctx.Done() on the next iteration.
-			if err := c.pollOnce(ctx); err != nil {
-				return err
-			}
 		}
 	}
 }

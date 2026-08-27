@@ -25,7 +25,8 @@ simplicity (no GVR-level reference counting across multiple desires).
 
 ## Poll loop: lifecycle only, never enqueues
 
-`pollOnce` calls `ListReadDesires` every `pollInterval` and reconciles the running per-desire
+`Start` launches the worker pool and calls `pollOnce` immediately, then every `pollInterval`.
+Each poll calls `ListReadDesires` and reconciles the running per-desire
 informer set against it (`InformerManager.Reconcile`): start an informer for a newly-listed
 `ReadDesire`, stop one whose `ReadDesire` is gone. **`pollOnce`/`Reconcile` never call `queue.Add`
 themselves.** Once a per-desire informer exists, its own initial `List` (fires `AddFunc` if the
@@ -183,7 +184,7 @@ that shared path, because GVR resolution and per-object observation happen in di
 Reported to status (via `applyStatus`): `observe`/`observeLive`'s outcomes
 (`Synced`/`NotFound`/`KubeAPIError`) and `pollOnce`'s `resolveGVR` failures (`PreCheckFailed`).
 Log-only, by necessity rather than oversight: `ListReadDesires` failing in `pollOnce`
-(partition-wide, not attributable to one desire - same as `applydesire.ReconcileAll`'s own
+(partition-wide, not attributable to one desire - same as `applydesire.reconcileAll`'s own
 `ListApplyDesires` failure), `GetReadDesire` failing inside `applyStatus` (nothing to compute a new
 status against if the read itself failed), and `UpdateReadDesireStatus` itself failing (can't record
 a status-write failure into the write that's failing - it's retried via the workqueue instead, same
@@ -193,7 +194,7 @@ as any other `sync` error).
 
 - **Fixed tuning constants:** `resyncPeriod` (60s, informer resync) and `workerCount` (4, worker
   pool size) are unexported consts, not configurable. `pollInterval` is the one caller-supplied
-  knob (`NewController`'s last parameter), mirroring the POC Helm chart's `applier.pollInterval`.
+  knob (`New`'s last parameter), mirroring the POC Helm chart's `applier.pollInterval`.
 - **No per-key dedup beyond the workqueue's own semantics:** adding an already-queued (or
   in-flight) key just marks it dirty for reprocessing once - see client-go `workqueue`'s own
   documented behavior.
@@ -208,7 +209,7 @@ deliberately narrow, but broader than `applydesire`'s "only what a fake client s
 simulate" - `dynamicfake` doesn't just lack one specific mechanism here, it silently ignores the
 `metadata.name` field selector every informer in this package is scoped by, which is the
 load-bearing assumption the whole "one informer per `ReadDesire`" design rests on.
-`TestEnvtest_FullLifecycle` covers, against a real `Run`-driven `Controller` and apiserver: a
+`TestEnvtest_FullLifecycle` covers, against a real `Start`-driven `Controller` and apiserver: a
 target that doesn't exist yet
 reporting `NotFound`; creation transitioning it to `Synced`; an unrelated object in the same
 namespace/GVR never affecting it (the actual field-selector isolation proof); a real update being

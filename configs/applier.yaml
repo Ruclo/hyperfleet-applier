@@ -1,0 +1,16 @@
+management_cluster: example-cluster
+poll_interval: 1m
+discovery_refresh_interval: 30s
+debug_config: false
+
+log:
+  level: info
+  format: json
+  output: stdout
+
+clients:
+  redis:
+    url: redis://localhost:6379/0
+  kubernetes:
+    # Empty uses in-cluster configuration.
+    kube_config_path: ""

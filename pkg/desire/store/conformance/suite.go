@@ -637,6 +637,33 @@ func RunSpecStoreSuite(t *testing.T, newStore func(t *testing.T) desire.SpecStor
 			}
 		})
 
+		t.Run("ConfirmedDeleteThenApplyRecreates", func(t *testing.T) {
+			store := newStore(t)
+			statusStore, ok := store.(desire.StatusStore)
+			if !ok {
+				t.Fatal("store must also implement StatusStore")
+			}
+			deleteID := identity("cluster-a", desire.TypeDelete, "mutual-recreate")
+
+			deleted, err := store.CreateDeleteDesire(ctx, newDeleteDesire(deleteID, ownerA))
+			if err != nil {
+				t.Fatalf("CreateDeleteDesire: %v", err)
+			}
+			if _, err := statusStore.UpdateDeleteDesireStatus(ctx, deleteID, desire.Status{
+				Conditions: []metav1.Condition{condition(desire.ReasonDeleted, metav1.ConditionTrue)},
+			}, deleted.Version); err != nil {
+				t.Fatalf("UpdateDeleteDesireStatus: %v", err)
+			}
+
+			applyID := identity(deleteID.ManagementCluster, desire.TypeApply, deleteID.Name)
+			if _, err := store.CreateApplyDesire(ctx, newApplyDesire(applyID, ownerA, `{}`)); err != nil {
+				t.Fatalf("CreateApplyDesire after confirmed Delete: %v", err)
+			}
+			if _, err := store.GetDeleteDesire(ctx, deleteID); !errors.Is(err, desire.ErrNotFound) {
+				t.Fatalf("expected confirmed DeleteDesire to be retired, got %v", err)
+			}
+		})
+
 		t.Run("ReadCoexistsWithApply", func(t *testing.T) {
 			store := newStore(t)
 			idApply := identity("cluster-a", desire.TypeApply, "mutual-4")

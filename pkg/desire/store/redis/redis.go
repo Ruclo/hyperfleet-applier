@@ -291,13 +291,23 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 		if err := checkTargetOwner(ctx, d.Identity, d.Owner, sibs); err != nil {
 			return nil, nil, fmt.Errorf("desire: create apply desire %s: %w", d.Identity, err)
 		}
-		if sibs[desire.TypeDelete] != nil {
-			return nil, nil, desire.ErrDeletePending
+		spec := desire.CloneApplySpec(d.Spec)
+		if deleted := sibs[desire.TypeDelete]; deleted != nil {
+			if !desire.IsDeleted(deleted.Status) {
+				return nil, nil, desire.ErrDeletePending
+			}
+			// Retire the completed delete atomically with the new apply.
+			return &resourceRecord{
+				Identity: d.Identity,
+				Owner:    d.Owner,
+				OriginID: d.OriginID,
+				Version:  1,
+				Apply:    &spec,
+			}, []string{redisKey(deleted.Identity)}, nil
 		}
 		if sibs[desire.TypeApply] != nil {
 			return nil, nil, desire.ErrAlreadyExists
 		}
-		spec := desire.CloneApplySpec(d.Spec)
 		return &resourceRecord{
 			Identity: d.Identity,
 			Owner:    d.Owner,

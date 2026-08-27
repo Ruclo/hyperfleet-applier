@@ -29,6 +29,7 @@ var (
 	envRESTMapper      *restmapper.DeferredDiscoveryRESTMapper
 )
 
+// TestMain starts a shared envtest apiserver for this package's envtest tests.
 func TestMain(m *testing.M) {
 	envTestEnvironment = &envtest.Environment{}
 
@@ -145,8 +146,22 @@ func TestEnvtest_FullLifecycle(t *testing.T) {
 		t.Fatalf("CreateReadDesire: %v", err)
 	}
 
-	c := NewController(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 100*time.Millisecond)
-	go func() { _ = c.Run(ctx) }()
+	c := New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 100*time.Millisecond)
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Start(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Start() error = %v, want nil after cancellation", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("Start did not return after context cancellation")
+		}
+	})
 
 	// 1. Target doesn't exist yet.
 	waitForReason(t, ctx, store, id, desire.ReasonNotFound)

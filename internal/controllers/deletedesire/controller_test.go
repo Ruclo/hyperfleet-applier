@@ -1,8 +1,10 @@
 package deletedesire
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -15,6 +17,21 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 )
+
+type notifyingSpecLister struct {
+	called chan<- struct{}
+}
+
+func (n notifyingSpecLister) ListDeleteDesires(context.Context, string) ([]desire.DeleteDesire, error) {
+	n.called <- struct{}{}
+	return nil, nil
+}
+
+func (notifyingSpecLister) GetDeleteDesire(
+	context.Context, desire.Identity,
+) (desire.DeleteDesire, error) {
+	return desire.DeleteDesire{}, desire.ErrNotFound
+}
 
 const (
 	rbacGroup = "rbac.authorization.k8s.io"
@@ -90,7 +107,7 @@ func newTestMapper() meta.RESTMapper {
 	return dm
 }
 
-// TestDeleteReconcileAll tests the DeleteReconciler's ReconcileAll method across
+// TestDeleteReconcileAll tests the DeleteReconciler's reconcileAll method across
 // success and failure scenarios: successful deletion of namespaced and cluster-scoped
 // resources, idempotent behavior when resources are already deleted, pre-check validation
 // failures (invalid namespace, mapper errors), and special handling when resource types
@@ -111,7 +128,7 @@ func TestDeleteReconcileAll(t *testing.T) {
 			},
 		)
 
-		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster)
+		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster, time.Hour)
 
 		testDesire := desire.DeleteDesire{
 			Identity: desire.Identity{
@@ -130,8 +147,8 @@ func TestDeleteReconcileAll(t *testing.T) {
 			t.Fatalf("CreateDeleteDesire() error = %v", err)
 		}
 
-		if err = dr.ReconcileAll(testCtx); err != nil {
-			t.Fatalf("ReconcileAll() error = %v, should be nil", err)
+		if err = dr.reconcileAll(testCtx); err != nil {
+			t.Fatalf("reconcileAll() error = %v, should be nil", err)
 		}
 
 		updatedDesire, err := testStore.GetDeleteDesire(testCtx, testDesire.Identity)
@@ -162,7 +179,7 @@ func TestDeleteReconcileAll(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-clusterrole"},
 			},
 		)
-		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster)
+		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster, time.Hour)
 
 		testDesire := desire.DeleteDesire{
 			Identity: desire.Identity{
@@ -181,8 +198,8 @@ func TestDeleteReconcileAll(t *testing.T) {
 			t.Fatalf("CreateDeleteDesire() error = %v", err)
 		}
 
-		if err = dr.ReconcileAll(testCtx); err != nil {
-			t.Fatalf("ReconcileAll() error = %v, should be nil", err)
+		if err = dr.reconcileAll(testCtx); err != nil {
+			t.Fatalf("reconcileAll() error = %v, should be nil", err)
 		}
 
 		updatedDesire, err := testStore.GetDeleteDesire(testCtx, testDesire.Identity)
@@ -209,7 +226,7 @@ func TestDeleteReconcileAll(t *testing.T) {
 
 		// Don't seed any resources - resource doesn't exist
 		testDynamicClient := newFakeDynamicClient(t)
-		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster)
+		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster, time.Hour)
 
 		testDesire := desire.DeleteDesire{
 			Identity: desire.Identity{
@@ -228,8 +245,8 @@ func TestDeleteReconcileAll(t *testing.T) {
 			t.Fatalf("CreateDeleteDesire() error = %v", err)
 		}
 
-		if err = dr.ReconcileAll(testCtx); err != nil {
-			t.Fatalf("ReconcileAll() error = %v, should be nil", err)
+		if err = dr.reconcileAll(testCtx); err != nil {
+			t.Fatalf("reconcileAll() error = %v, should be nil", err)
 		}
 
 		updatedDesire, err := testStore.GetDeleteDesire(testCtx, testDesire.Identity)
@@ -255,7 +272,7 @@ func TestDeleteReconcileAll(t *testing.T) {
 		testCtx := t.Context()
 
 		testDynamicClient := newFakeDynamicClient(t)
-		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster)
+		dr := New(testStore, testStore, testDynamicClient, testMapper, testManagementCluster, time.Hour)
 
 		testDesire := desire.DeleteDesire{
 			Identity: desire.Identity{
@@ -274,8 +291,8 @@ func TestDeleteReconcileAll(t *testing.T) {
 			t.Fatalf("CreateDeleteDesire() error = %v", err)
 		}
 
-		if err = dr.ReconcileAll(testCtx); err != nil {
-			t.Fatalf("ReconcileAll() error = %v, should be nil", err)
+		if err = dr.reconcileAll(testCtx); err != nil {
+			t.Fatalf("reconcileAll() error = %v, should be nil", err)
 		}
 
 		updatedDesire, err := testStore.GetDeleteDesire(testCtx, testDesire.Identity)
@@ -303,7 +320,7 @@ func TestDeleteReconcileAll(t *testing.T) {
 		testDynamicClient := newFakeDynamicClient(t)
 		// Use a mapper that always returns NoMatchError (CRD uninstalled)
 		noMatchMapper := &noMatchMapper{}
-		dr := New(testStore, testStore, testDynamicClient, noMatchMapper, testManagementCluster)
+		dr := New(testStore, testStore, testDynamicClient, noMatchMapper, testManagementCluster, time.Hour)
 
 		testDesire := desire.DeleteDesire{
 			Identity: desire.Identity{
@@ -322,8 +339,8 @@ func TestDeleteReconcileAll(t *testing.T) {
 			t.Fatalf("CreateDeleteDesire() error = %v", err)
 		}
 
-		if err = dr.ReconcileAll(testCtx); err != nil {
-			t.Fatalf("ReconcileAll() error = %v, should be nil", err)
+		if err = dr.reconcileAll(testCtx); err != nil {
+			t.Fatalf("reconcileAll() error = %v, should be nil", err)
 		}
 
 		updatedDesire, err := testStore.GetDeleteDesire(testCtx, testDesire.Identity)
@@ -351,7 +368,7 @@ func TestDeleteReconcileAll(t *testing.T) {
 		testDynamicClient := newFakeDynamicClient(t)
 		// Use a mapper that returns a generic error (not NoMatchError)
 		errMapper := &errorMapper{}
-		dr := New(testStore, testStore, testDynamicClient, errMapper, testManagementCluster)
+		dr := New(testStore, testStore, testDynamicClient, errMapper, testManagementCluster, time.Hour)
 
 		testDesire := desire.DeleteDesire{
 			Identity: desire.Identity{
@@ -370,8 +387,8 @@ func TestDeleteReconcileAll(t *testing.T) {
 			t.Fatalf("CreateDeleteDesire() error = %v", err)
 		}
 
-		if err = dr.ReconcileAll(testCtx); err != nil {
-			t.Fatalf("ReconcileAll() error = %v, should be nil", err)
+		if err = dr.reconcileAll(testCtx); err != nil {
+			t.Fatalf("reconcileAll() error = %v, should be nil", err)
 		}
 
 		updatedDesire, err := testStore.GetDeleteDesire(testCtx, testDesire.Identity)
@@ -392,4 +409,31 @@ func TestDeleteReconcileAll(t *testing.T) {
 			t.Errorf("Condition 0: Reason = %s, want PreCheckFailed", updatedDesire.Status.Conditions[0].Reason)
 		}
 	})
+}
+
+func TestStart_ReconcilesImmediatelyAndStopsCleanly(t *testing.T) {
+	called := make(chan struct{}, 1)
+	r := New(notifyingSpecLister{called: called}, nil, nil, nil, "test-cluster", time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Start(ctx)
+	}()
+
+	select {
+	case <-called:
+		// The first pass ran without waiting for the 60-second ticker.
+	case <-time.After(time.Second):
+		t.Fatal("Start did not begin a reconciliation pass immediately")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() error = %v, want nil after caller cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not stop after context cancellation")
+	}
 }

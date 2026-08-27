@@ -25,7 +25,7 @@ func (c *Controller) runWorker(ctx context.Context) {
 // processNextWorkItem pulls one key off the queue, calls sync, and reports
 // the outcome to the rate limiter: Forget on success or context cancellation
 // (caller-driven control flow, not a resource failure - the same distinction
-// applydesire's ReconcileAll makes for context.Canceled/DeadlineExceeded),
+// applydesire's reconcileAll makes for context.Canceled/DeadlineExceeded),
 // AddRateLimited on any other error so a failing key retries with backoff
 // instead of hot-looping. Returns false only when the queue is shutting down.
 func (c *Controller) processNextWorkItem(ctx context.Context) bool {

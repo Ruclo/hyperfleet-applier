@@ -71,8 +71,12 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 
 	deleteID := id
 	deleteID.Type = desire.TypeDelete
-	if _, ok := s.items[deleteID]; ok {
-		return desire.ApplyDesire{}, desire.ErrDeletePending
+	if deleteRecord, ok := s.items[deleteID]; ok {
+		if !desire.IsDeleted(deleteRecord.Status) {
+			return desire.ApplyDesire{}, desire.ErrDeletePending
+		}
+		// Retire the completed delete with the new apply.
+		delete(s.items, deleteID)
 	}
 	if _, ok := s.items[id]; ok {
 		return desire.ApplyDesire{}, desire.ErrAlreadyExists

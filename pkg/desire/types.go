@@ -3,6 +3,7 @@ package desire
 import (
 	"encoding/json"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -69,6 +70,12 @@ const (
 // Status is the uniform condition contract across all desire types.
 type Status struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// IsDeleted reports whether deletion was confirmed.
+func IsDeleted(status Status) bool {
+	condition := apimeta.FindStatusCondition(status.Conditions, TypeSuccessful)
+	return condition != nil && condition.Status == metav1.ConditionTrue && condition.Reason == ReasonDeleted
 }
 
 // ApplyDesire is the intent to make a Kubernetes resource exist with specific

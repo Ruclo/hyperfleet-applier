@@ -71,6 +71,7 @@ type SpecStore interface {
 	// CreateApplyDesire creates an ApplyDesire.
 	// Returns ErrOwnerConflict for a different target owner, ErrDeletePending for
 	// an active DeleteDesire, or ErrAlreadyExists if the ApplyDesire exists.
+	// A confirmed delete is atomically replaced by the new apply.
 	CreateApplyDesire(ctx context.Context, d ApplyDesire) (ApplyDesire, error)
 
 	// GetApplyDesire retrieves a previously created ApplyDesire.

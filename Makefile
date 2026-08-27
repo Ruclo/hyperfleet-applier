@@ -5,6 +5,22 @@ GOFMT ?= gofmt
 
 ENVTEST_K8S_VERSION ?= 1.36.2
 
+BIN_DIR := bin
+BINARY_NAME := $(BIN_DIR)/hyperfleet-applier
+
+BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+APP_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+
+GOFLAGS ?= -trimpath
+LDFLAGS := -s -w \
+	-X main.version=$(APP_VERSION) \
+	-X main.commit=$(GIT_SHA) \
+	-X main.date=$(BUILD_DATE)
+
+CONFIG ?= configs/applier.yaml
+KUBE_CONFIG_PATH ?= $(if $(KUBECONFIG),$(KUBECONFIG),$(HOME)/.kube/config)
+
 # Invoke a pinned tool: $(call gotool,name)
 # All tools share tools/go.mod with Go 1.24+ tool directives.
 TOOL_MOD := tools/go.mod
@@ -17,8 +33,15 @@ help: ## Display this help
 ##@ Development
 
 .PHONY: build
-build: ## Build all packages
-	$(GO) build ./...
+build: ## Build the applier binary
+	@mkdir -p $(BIN_DIR)
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd
+
+.PHONY: run
+run: build ## Run the applier service
+	./$(BINARY_NAME) serve \
+		--config "$(CONFIG)" \
+		--kubernetes-kube-config-path "$(KUBE_CONFIG_PATH)"
 
 .PHONY: test
 test: ## Run unit tests

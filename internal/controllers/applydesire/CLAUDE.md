@@ -17,8 +17,10 @@ Per desire, `reconcileOne`/`applyToCluster`:
    that cannot be decoded as an object with `kind` (e.g. missing `kind`), or missing
    `apiVersion`/`metadata.name` → `ReasonPreCheckFailed` (no kube-apiserver call attempted).
 2. Resolve GVK → GVR via the injected `meta.RESTMapper`. Hosts should supply a
-   `restmapper.DeferredDiscoveryRESTMapper` (or equivalent). The host owns discovery cache refresh
-   (`Reset()` or recreation); the reconciler does not do it.
+   `restmapper.DeferredDiscoveryRESTMapper` (or equivalent). For `NoMatchError` (e.g. a CRD
+   installed after the mapper's discovery cache was already populated), the reconciler resets the
+   mapper and retries once before falling back to `ReasonPreCheckFailed` - matching deletedesire's
+   and readdesire's identical policy.
 3. Reject with `ReasonPreCheckFailed` if the mapped GVR, name, or (for namespaced resources)
    namespace disagree with `d.Identity`. The store validates those fields independently, so a stored
    desire can disagree; applying anyway would mutate a different object than the one status is
@@ -52,7 +54,3 @@ The reconciler reads intent and writes status only. `conditions.Equal` (ignoring
 - **Cluster-scoped manifests:** `checkApplyTarget` does not reject a non-empty `metadata.namespace`
   on cluster-scoped kinds; the applier forwards it in the SSA body and the kube-apiserver decides
   whether to accept or reject the request.
-
-envtest coverage (`envtest_test.go`, build tag `envtest`, run via `make test-envtest`) includes:
-unchanged reconcile cluster no-op (`resourceVersion`), `Force` field reclaim, and cluster-scoped
-stray-namespace behavior against a real apiserver. Excluded from the normal `go test ./...` run.

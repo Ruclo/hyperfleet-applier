@@ -1,10 +1,14 @@
 package readdesire
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
@@ -138,5 +142,50 @@ func TestInformerManager_RebuildsInformerOnVersionChange(t *testing.T) {
 	}
 	if firstLister == secondLister {
 		t.Errorf("Lister unchanged after a version change - informer was not rebuilt")
+	}
+}
+
+// TestInformerManager_StartEnqueuesAfterSyncTimeout proves that a per-desire
+// informer whose list call permanently fails (e.g. RBAC denies list/watch on
+// this GVR - a network error would be a poor stand-in here since it's
+// normally transient and the reflector's own retry would eventually recover
+// on its own) does not block enqueue forever. sync will read this key's
+// still-empty cache afterward and report ReasonNotFound - not necessarily
+// accurate (the object may genuinely exist and be unreachable only through
+// this informer), but it is the honest, current truth of what the informer
+// can actually see, and it beats reporting nothing at all forever.
+func TestInformerManager_StartEnqueuesAfterSyncTimeout(t *testing.T) {
+	const namespace = "default"
+	dyn := newFakeDynamicClient(t)
+	dyn.PrependReactor("list", configMapGVR.Resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(
+			schema.GroupResource{Resource: configMapGVR.Resource}, "cm-forbidden", errors.New("simulated RBAC denial"),
+		)
+	})
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
+	m := newInformerManager(dyn, queue)
+	m.syncTimeout = 100 * time.Millisecond // production default stays 30s; this instance only is shortened
+	t.Cleanup(m.shutdownAll)
+	t.Cleanup(queue.ShutDown)
+
+	key := readIdentity(namespace, "cm-forbidden")
+	target := informerTarget{gvr: configMapGVR, namespace: namespace, name: "cm-forbidden"}
+	m.Reconcile(map[desire.Identity]struct{}{key: {}}, map[desire.Identity]informerTarget{key: target})
+
+	got := make(chan desire.Identity, 1)
+	go func() {
+		if k, shutdown := queue.Get(); !shutdown {
+			got <- k
+		}
+	}()
+
+	select {
+	case k := <-got:
+		if k != key {
+			t.Errorf("enqueued key = %+v, want %+v", k, key)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for start to enqueue key after a permanent list failure: " +
+			"a cache that can never sync must not block enqueue forever")
 	}
 }

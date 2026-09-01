@@ -93,6 +93,3 @@ normal Go callers only.
 - **Timeouts:** Each GET and DELETE call has a 30-second timeout (`defaultDeleteTimeout`) to prevent
   hung apiserver connections from stalling an entire reconciliation pass.
 
-envtest coverage (`envtest_test.go`, build tag `envtest`, run via `make test-envtest`) includes:
-successful deletion, deletion with finalizers (`WaitingForDeletion`), and non-existent resource
-deletion against a real apiserver. Excluded from the normal `go test ./...` run.

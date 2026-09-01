@@ -203,7 +203,7 @@ func TestStart_PollsImmediatelyAndStopsCleanly(t *testing.T) {
 	store := memory.New()
 	c := New(
 		notifyingSpecLister{called: called}, store, newFakeDynamicClient(t), newTestMapper(),
-		testManagementCluster, time.Hour,
+		testManagementCluster, time.Hour, DefaultInformerSyncTimeout,
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -240,7 +240,10 @@ func TestPollOnce_UnresolvableGVRRecordsPreCheckFailed(t *testing.T) {
 	id := readIdentity("default", "cm-bad-gvr")
 	seedReadDesire(t, store, id, "owner-1")
 
-	c := New(store, store, newFakeDynamicClient(t), newNoMatchMapper(), testManagementCluster, time.Second)
+	c := New(
+		store, store, newFakeDynamicClient(t), newNoMatchMapper(), testManagementCluster,
+		time.Second, DefaultInformerSyncTimeout,
+	)
 
 	c.pollOnce(ctx)
 
@@ -267,7 +270,10 @@ func TestPollOnce_ValidDesireStartsInformer(t *testing.T) {
 	id := readIdentity("default", "cm-happy-path")
 	seedReadDesire(t, store, id, "owner-1")
 
-	c := New(store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
+	c := New(
+		store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster,
+		time.Second, DefaultInformerSyncTimeout,
+	)
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
@@ -287,7 +293,10 @@ func TestPollOnce_DeletedDesireStopsInformer(t *testing.T) {
 	id := readIdentity("default", "cm-teardown")
 	created := seedReadDesire(t, store, id, "owner-1")
 
-	c := New(store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
+	c := New(
+		store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster,
+		time.Second, DefaultInformerSyncTimeout,
+	)
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
@@ -313,7 +322,10 @@ func TestPollOnce_ListReadDesiresFailureIsLogAndReturn(t *testing.T) {
 	counting := &countingStatusStore{statusStore: memory.New()}
 	spec := erroringSpecLister{err: errors.New("store unavailable")}
 
-	c := New(spec, counting, newFakeDynamicClient(t), newTestMapper(), testManagementCluster, time.Second)
+	c := New(
+		spec, counting, newFakeDynamicClient(t), newTestMapper(), testManagementCluster,
+		time.Second, DefaultInformerSyncTimeout,
+	)
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
@@ -342,6 +354,7 @@ func TestPollOnce_TargetVersionChangeRebuildsInformerEndToEnd(t *testing.T) {
 
 	c := New(
 		store, store, newMultiVersionFakeDynamicClient(t), newMultiVersionTestMapper(), testManagementCluster, time.Second,
+		DefaultInformerSyncTimeout,
 	)
 	t.Cleanup(c.informers.shutdownAll)
 

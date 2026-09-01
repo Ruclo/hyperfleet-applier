@@ -1,0 +1,25 @@
+{{ template "chart.header" . }}
+{{ template "chart.deprecationWarning" . }}
+{{ template "chart.badgesSection" . }}
+{{ template "chart.description" . }}
+{{ template "chart.homepageLine" . }}
+{{ template "chart.maintainersSection" . }}
+{{ template "chart.valuesSection" . }}
+
+## Deriving the RBAC allowlist
+
+The chart's `rbac.rules` must list every GroupVersionResource (GVR)
+that adapters configured for this management cluster will ask the applier to reconcile.
+Each adapter task config declares the resource kinds it produces desires for — collect
+them into one allowlist per cluster.
+
+1. For each adapter targeting this applier's `managementCluster`, inspect its task
+   configuration and note every `apiGroup` + `resource` pair it can emit during 
+   the resources phase.
+2. Merge the pairs into `rbac.rules` entries in your Helm values override,
+   using `_commonVerbs` for the verb set.
+3. Run `helm template` and verify the rendered ClusterRole contains exactly the rules
+   you expect.
+
+For local development, `rbac.devModeWildcard=true` bypasses the allowlist
+with a wildcard rule.

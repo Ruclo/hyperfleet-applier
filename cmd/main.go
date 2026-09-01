@@ -202,6 +202,7 @@ func runServe(parent context.Context, cfg *config.Config) error {
 		deletedesire.New(store, store, dyn, mapper, cfg.ManagementCluster, pollInterval),
 		readdesire.New(
 			store, store, dyn, mapper, cfg.ManagementCluster, pollInterval,
+			readdesire.DefaultInformerSyncTimeout,
 		),
 	}
 

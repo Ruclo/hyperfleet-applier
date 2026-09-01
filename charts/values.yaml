@@ -22,18 +22,19 @@ serviceAccount:
 rbac:
   # -- Create RBAC resources (ClusterRole, ClusterRoleBinding)
   create: true
-  # -- ClusterRole rules - the controller needs broad permissions to apply any resource type.
-  # Wildcards are required because the applier dynamically manages arbitrary resource types
-  # (including CRDs) determined at runtime by desires in the Redis store.
-  # Verb breakdown by controller:
-  #   ApplyDesire:  create, patch (server-side apply)
-  #   DeleteDesire: get, delete
-  #   ReadDesire:   get, list, watch (dynamic informers)
-  # "update" is intentionally excluded — the applier uses SSA (patch), never full PUT.
-  rules:
-    - apiGroups: ["*"]
-      resources: ["*"]
-      verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  _commonVerbs: &commonVerbs ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # -- Explicit allowlist of GroupVersionResources (GVRs) the applier's ServiceAccount may manage
+  # on this cluster. Each entry becomes one ClusterRole PolicyRule. Do NOT add a "*" apiGroup or
+  # resource here -- see rbac.devModeWildcard for the (off-by-default) escape hatch. This list must
+  # be tailored per Helm release/management cluster; see "Deriving the RBAC allowlist" in the
+  # chart README for how to compute it.
+  rules: []
+  # -- DANGER: replaces rbac.rules with a cluster-wide "*"/"*" ClusterRole rule when
+  # true. This disables the allowlist entirely and grants unrestricted create/update/patch/delete
+  # on every resource type in the cluster. NEVER enable this in a shared, staging, or production
+  # environment -- it exists only to unblock local/dev iteration against a resource kind not yet
+  # added to rbac.rules. Default: false (must be explicitly opted into).
+  devModeWildcard: false
 
 # -- Annotations to add to controller pods
 podAnnotations: {}

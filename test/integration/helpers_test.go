@@ -9,11 +9,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8srand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,6 +43,10 @@ func configMapIdentity(dtype desire.DesireType, name string) desire.Identity {
 
 func clusterRoleIdentity(dtype desire.DesireType, name string) desire.Identity {
 	return identity(dtype, rbacGroup, "clusterroles", "", name)
+}
+
+func podIdentity(dtype desire.DesireType, name string) desire.Identity {
+	return identity(dtype, "", "pods", defaultNamespace, name)
 }
 
 // widgetIdentity builds an Identity against gvr - each controller's
@@ -91,6 +97,28 @@ func newClusterRoleContentWithNamespace(t *testing.T, name, namespace string) js
 	raw, err := json.Marshal(obj)
 	if err != nil {
 		t.Fatalf("marshal clusterrole content: %v", err)
+	}
+	return raw
+}
+
+func newPodContent(t *testing.T, name, namespace string) json.RawMessage {
+	t.Helper()
+	obj := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": namespace,
+		},
+		"spec": map[string]any{
+			"containers": []any{
+				map[string]any{"name": "pause", "image": "registry.k8s.io/pause:3.9"},
+			},
+		},
+	}
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal pod content: %v", err)
 	}
 	return raw
 }
@@ -294,4 +322,48 @@ func createTarget(
 		}
 	})
 	return created
+}
+
+var allowlistVerbs = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
+
+// restrictedRBACClient returns a dynamic client whose ClusterRole grants only
+// configmap access. Desires targeting any other resource (e.g. pods) draw a
+// real Forbidden. Only the client is restricted, not the mapper — callers
+// keep the admin envRESTMapper for GVR resolution.
+func restrictedRBACClient(t *testing.T) dynamic.Interface {
+	t.Helper()
+
+	suffix := k8srand.String(5)
+	userName := "applier-restricted-" + suffix
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: "applier-allowlist-" + suffix},
+		Rules: []rbacv1.PolicyRule{
+			{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: allowlistVerbs},
+		},
+	}
+	binding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "applier-allowlist-binding-" + suffix},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacGroup, Kind: "ClusterRole", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{Kind: "User", APIGroup: rbacGroup, Name: userName}},
+	}
+	for _, obj := range []client.Object{role, binding} {
+		if err := envK8sClient.Create(context.Background(), obj); err != nil {
+			t.Fatalf("create restricted %T: %v", obj, err)
+		}
+		t.Cleanup(func() {
+			if err := envK8sClient.Delete(context.Background(), obj); err != nil && !apierrors.IsNotFound(err) {
+				t.Errorf("clean up restricted %T %q: %v", obj, obj.GetName(), err)
+			}
+		})
+	}
+
+	authUser, err := envTestEnvironment.AddUser(envtest.User{Name: userName}, envRESTConfig)
+	if err != nil {
+		t.Fatalf("AddUser %q: %v", userName, err)
+	}
+	dyn, err := dynamic.NewForConfig(authUser.Config())
+	if err != nil {
+		t.Fatalf("dynamic client for restricted user %q: %v", userName, err)
+	}
+	return dyn
 }

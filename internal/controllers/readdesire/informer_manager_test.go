@@ -21,7 +21,7 @@ func newTestInformerManager(t *testing.T) (*InformerManager, workqueue.TypedRate
 	t.Helper()
 	dyn := newFakeDynamicClient(t)
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
-	m := newInformerManager(dyn, queue)
+	m := newInformerManager(dyn, queue, DefaultInformerSyncTimeout)
 	t.Cleanup(m.shutdownAll)
 	return m, queue
 }
@@ -163,8 +163,7 @@ func TestInformerManager_StartEnqueuesAfterSyncTimeout(t *testing.T) {
 		)
 	})
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[desire.Identity]())
-	m := newInformerManager(dyn, queue)
-	m.syncTimeout = 100 * time.Millisecond // production default stays 30s; this instance only is shortened
+	m := newInformerManager(dyn, queue, 100*time.Millisecond)
 	t.Cleanup(m.shutdownAll)
 	t.Cleanup(queue.ShutDown)
 

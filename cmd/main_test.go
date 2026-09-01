@@ -236,7 +236,7 @@ func TestControllersReconcileSeededDesiresInParallel(t *testing.T) {
 		done <- startRunnables(ctx, []reconciler.Runnable{
 			applydesire.New(store, store, dyn, mapper, testManagementCluster, time.Hour),
 			deletedesire.New(store, store, dyn, mapper, testManagementCluster, time.Hour),
-			readdesire.New(store, store, dyn, mapper, testManagementCluster, time.Hour),
+			readdesire.New(store, store, dyn, mapper, testManagementCluster, time.Hour, readdesire.DefaultInformerSyncTimeout),
 		})
 	}()
 

@@ -49,17 +49,23 @@ type InformerManager struct {
 	mu          sync.Mutex
 }
 
-// defaultInformerSyncTimeout is the timeout period for informer's cache resync
-const defaultInformerSyncTimeout = 30 * time.Second
+// DefaultInformerSyncTimeout is the timeout period for informer's cache
+// resync
+const DefaultInformerSyncTimeout = 30 * time.Second
 
 func newInformerManager(
-	dyn dynamic.Interface, queue workqueue.TypedRateLimitingInterface[desire.Identity],
+	dyn dynamic.Interface,
+	queue workqueue.TypedRateLimitingInterface[desire.Identity],
+	syncTimeout time.Duration,
 ) *InformerManager {
+	if syncTimeout <= 0 {
+		syncTimeout = DefaultInformerSyncTimeout
+	}
 	return &InformerManager{
 		dyn:         dyn,
 		queue:       queue,
 		informers:   make(map[desire.Identity]*trackedInformer),
-		syncTimeout: defaultInformerSyncTimeout,
+		syncTimeout: syncTimeout,
 	}
 }
 

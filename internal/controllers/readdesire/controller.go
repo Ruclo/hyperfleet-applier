@@ -88,6 +88,7 @@ func New(
 	mapper meta.ResettableRESTMapper,
 	managementCluster string,
 	pollInterval time.Duration,
+	informerSyncTimeout time.Duration,
 ) *Controller {
 	queue := workqueue.NewTypedRateLimitingQueue(
 		workqueue.DefaultTypedControllerRateLimiter[desire.Identity](),
@@ -100,7 +101,7 @@ func New(
 		managementCluster: managementCluster,
 		pollInterval:      pollInterval,
 		queue:             queue,
-		informers:         newInformerManager(dyn, queue),
+		informers:         newInformerManager(dyn, queue, informerSyncTimeout),
 	}
 }
 

@@ -207,7 +207,8 @@ HELM_TEST_VALUES := \
 	--set image.tag=test \
 	--set applier.managementCluster=test-cluster \
 	--set applier.pollInterval=5s \
-	--set redis.address=redis:6379
+	--set redis.address=redis:6379 \
+	--set rbac.devModeWildcard=true
 
 .PHONY: helm-lint
 helm-lint: ## Lint the Helm chart

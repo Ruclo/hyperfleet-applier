@@ -89,5 +89,8 @@ Validate required values
 {{- if not .Values.redis.address }}
 {{- fail "redis.address is required" }}
 {{- end }}
+{{- if and .Values.rbac.create (not .Values.rbac.devModeWildcard) (not .Values.rbac.rules) }}
+{{- fail "rbac.rules must not be empty when rbac.create=true and rbac.devModeWildcard=false. Populate an explicit GVR allowlist, or set rbac.devModeWildcard=true for local/dev only (see chart README warning)." }}
+{{- end }}
 {{- end }}
 

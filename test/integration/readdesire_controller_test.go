@@ -76,7 +76,10 @@ func TestEnvtest_ReadDesire_FullLifecycle(t *testing.T) {
 		t.Fatalf("CreateReadDesire: %v", err)
 	}
 
-	c := readdesire.New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 100*time.Millisecond)
+	c := readdesire.New(
+		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
+		100*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+	)
 	go func() { _ = c.Start(ctx) }()
 
 	// 1. Target doesn't exist yet.
@@ -149,7 +152,10 @@ func TestEnvtest_ReadDesire_ClusterScopedResource(t *testing.T) {
 		t.Fatalf("CreateReadDesire: %v", err)
 	}
 
-	c := readdesire.New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 100*time.Millisecond)
+	c := readdesire.New(
+		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
+		100*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+	)
 	go func() { _ = c.Start(ctx) }()
 
 	// 1. Target doesn't exist yet.
@@ -191,7 +197,10 @@ func TestEnvtest_ReadDesire_GoroutinesDoNotLeakOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	c := readdesire.New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 50*time.Millisecond)
+	c := readdesire.New(
+		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
+		50*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+	)
 
 	done := make(chan struct{})
 	go func() {
@@ -268,7 +277,10 @@ func TestEnvtest_ReadDesire_NewCRDResolvedAutomatically(t *testing.T) {
 		t.Fatalf("CreateReadDesire: %v", err)
 	}
 
-	c := readdesire.New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 50*time.Millisecond)
+	c := readdesire.New(
+		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
+		50*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+	)
 	go func() { _ = c.Start(ctx) }()
 
 	// 1. The Widget CRD doesn't exist yet: GVR resolution fails.
@@ -280,5 +292,40 @@ func TestEnvtest_ReadDesire_NewCRDResolvedAutomatically(t *testing.T) {
 	// 3. No external Reset() call here - resolveGVR's own internal
 	// IsNoMatchError -> Reset() -> retry must pick up the new CRD on its own,
 	// on the very next poll tick.
+	waitForReason(t, ctx, store, id, desire.ReasonNotFound)
+}
+
+// TestEnvtest_ReadDesire_RBACDeniedListReportsNotFound proves that a ReadDesire
+// targeting a resource outside the allowlist (pods, while only configmaps are
+// permitted), whose LIST is Forbidden so its cache never syncs, still records
+// NotFound via the syncTimeout enqueue-anyway path instead of hanging.
+//
+// NOTE: NotFound is misleading here — the object may exist but the informer
+// can't list it (Forbidden). observe cannot distinguish "confirmed absent"
+// from "cache never synced" because lister.Get returns the same NotFound
+// either way, and there is no HasSynced check yet. HYPERFLEET-1618 should
+// check informer.HasSynced() before trusting a NotFound from an unsynced
+// cache, and report KubeAPIError instead.
+func TestEnvtest_ReadDesire_RBACDeniedListReportsNotFound(t *testing.T) {
+	const name = "pod-rbac-denied-read"
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	restricted := restrictedRBACClient(t)
+
+	store := memory.New()
+	id := podIdentity(desire.TypeRead, name)
+	if _, err := store.CreateReadDesire(ctx, desire.ReadDesire{
+		Identity: id, Owner: testOwner, TargetVersion: testTargetVersion,
+	}); err != nil {
+		t.Fatalf("CreateReadDesire: %v", err)
+	}
+
+	c := readdesire.New(
+		store, store, restricted, envRESTMapper, testManagementCluster,
+		50*time.Millisecond, 200*time.Millisecond,
+	)
+	go func() { _ = c.Start(ctx) }()
+
 	waitForReason(t, ctx, store, id, desire.ReasonNotFound)
 }

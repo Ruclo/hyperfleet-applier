@@ -309,7 +309,6 @@ func TestEnvtest_ReadDesire_NewCRDResolvedAutomatically(t *testing.T) {
 func TestEnvtest_ReadDesire_RBACDeniedListReportsNotFound(t *testing.T) {
 	const name = "pod-rbac-denied-read"
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
 	restricted := restrictedRBACClient(t)
 
@@ -325,7 +324,7 @@ func TestEnvtest_ReadDesire_RBACDeniedListReportsNotFound(t *testing.T) {
 		store, store, restricted, envRESTMapper, testManagementCluster,
 		50*time.Millisecond, readdesire.WithInformerSyncTimeout(200*time.Millisecond),
 	)
-	go func() { _ = c.Start(ctx) }()
+	t.Cleanup(startController(t, ctx, cancel, c.Start))
 
 	waitForReason(t, ctx, store, id, desire.ReasonNotFound)
 }

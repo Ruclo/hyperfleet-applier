@@ -273,13 +273,12 @@ func TestEnvtest_ApplyDesire_NewCRDResolvedAutomatically(t *testing.T) {
 func TestEnvtest_ApplyDesire_RBACDeniedApplyGetsKubeAPIError(t *testing.T) {
 	const name = "pod-rbac-denied-apply"
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
 	restricted := restrictedRBACClient(t)
 
 	store := memory.New()
 	r := applydesire.New(store, store, restricted, envRESTMapper, testManagementCluster, applyPollInterval)
-	go func() { _ = r.Start(ctx) }()
+	t.Cleanup(startController(t, ctx, cancel, r.Start))
 
 	id := podIdentity(desire.TypeApply, name)
 	seedApplyDesire(t, store, id, newPodContent(t, name, defaultNamespace))

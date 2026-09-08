@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -334,6 +335,27 @@ func createTarget(
 		}
 	})
 	return created
+}
+
+// startController launches start in a background goroutine and returns a
+// cleanup function that cancels ctx, joins the goroutine, and reports any
+// non-cancellation error. The caller registers the cleanup at the right
+// point in the t.Cleanup LIFO stack.
+func startController(t *testing.T, ctx context.Context, cancel context.CancelFunc, start func(context.Context) error) func() {
+	t.Helper()
+	errCh := make(chan error, 1)
+	go func() { errCh <- start(ctx) }()
+	return func() {
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("controller returned unexpected error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("controller did not shut down within 10s after context cancellation")
+		}
+	}
 }
 
 var allowlistVerbs = []string{"get", "list", "watch", "create", "update", "patch", "delete"}

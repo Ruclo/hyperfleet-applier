@@ -247,7 +247,6 @@ func TestEnvtest_DeleteDesire_NewCRDResolvedAutomatically(t *testing.T) {
 func TestEnvtest_DeleteDesire_RBACDeniedGetGetsKubeAPIError(t *testing.T) {
 	const name = "pod-rbac-denied-delete"
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
 	restricted := restrictedRBACClient(t)
 
@@ -259,7 +258,7 @@ func TestEnvtest_DeleteDesire_RBACDeniedGetGetsKubeAPIError(t *testing.T) {
 		t.Fatalf("CreateDeleteDesire: %v", err)
 	}
 
-	go func() { _ = r.Start(ctx) }()
+	t.Cleanup(startController(t, ctx, cancel, r.Start))
 
 	dd := waitForDeleteReason(t, ctx, store, id, desire.ReasonKubeAPIError)
 	assertConditionMessageContains(t, dd.Status, desire.TypeSuccessful, "forbidden")

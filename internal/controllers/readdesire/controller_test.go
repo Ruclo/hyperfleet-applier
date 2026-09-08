@@ -255,7 +255,7 @@ func TestPollOnce_UnresolvableGVRRecordsPreCheckFailed(t *testing.T) {
 	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != desire.ReasonPreCheckFailed {
 		t.Errorf("condition = %+v, want Status=False Reason=%q", cond, desire.ReasonPreCheckFailed)
 	}
-	if _, ok := c.informers.Lister(id); ok {
+	if _, ok, _ := c.informers.Lister(id); ok {
 		t.Errorf("informer exists for a desire whose GVR never resolved, want none")
 	}
 }
@@ -278,7 +278,7 @@ func TestPollOnce_ValidDesireStartsInformer(t *testing.T) {
 
 	c.pollOnce(ctx)
 
-	if _, ok := c.informers.Lister(id); !ok {
+	if _, ok, _ := c.informers.Lister(id); !ok {
 		t.Errorf("informer does not exist for a valid, resolvable desire, want one running")
 	}
 }
@@ -300,7 +300,7 @@ func TestPollOnce_DeletedDesireStopsInformer(t *testing.T) {
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
-	if _, ok := c.informers.Lister(id); !ok {
+	if _, ok, _ := c.informers.Lister(id); !ok {
 		t.Fatalf("informer does not exist after first pollOnce, want one running")
 	}
 
@@ -309,7 +309,7 @@ func TestPollOnce_DeletedDesireStopsInformer(t *testing.T) {
 	}
 
 	c.pollOnce(ctx)
-	if _, ok := c.informers.Lister(id); ok {
+	if _, ok, _ := c.informers.Lister(id); ok {
 		t.Errorf("informer still exists after its ReadDesire was deleted, want none")
 	}
 }
@@ -358,7 +358,7 @@ func TestPollOnce_TargetVersionChangeRebuildsInformerEndToEnd(t *testing.T) {
 	t.Cleanup(c.informers.shutdownAll)
 
 	c.pollOnce(ctx)
-	firstLister, ok := c.informers.Lister(id)
+	firstLister, ok, _ := c.informers.Lister(id)
 	if !ok {
 		t.Fatalf("informer does not exist after first pollOnce, want one running at TargetVersion v1")
 	}
@@ -372,7 +372,7 @@ func TestPollOnce_TargetVersionChangeRebuildsInformerEndToEnd(t *testing.T) {
 	}
 
 	c.pollOnce(ctx)
-	secondLister, ok := c.informers.Lister(id)
+	secondLister, ok, _ := c.informers.Lister(id)
 	if !ok {
 		t.Fatalf("informer does not exist after TargetVersion-change pollOnce, want one running at TargetVersion v2")
 	}

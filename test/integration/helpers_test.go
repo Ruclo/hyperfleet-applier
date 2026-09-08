@@ -145,11 +145,11 @@ func assertConditionMessageContains(t *testing.T, status desire.Status, condType
 	}
 }
 
-// waitForReason polls store for id's ReadDesire until its Successful
+// waitForReadReason polls store for id's ReadDesire until its Successful
 // condition's Reason matches want, or ctx's deadline is hit. Real watch
 // delivery has real (if small) latency against envtest's apiserver, unlike
 // the fakes the controllers' own unit tests use.
-func waitForReason(
+func waitForReadReason(
 	t *testing.T, ctx context.Context, store desire.SpecStore, id desire.Identity, want string,
 ) desire.ReadDesire {
 	t.Helper()

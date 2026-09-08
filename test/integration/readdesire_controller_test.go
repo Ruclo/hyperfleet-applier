@@ -78,7 +78,7 @@ func TestEnvtest_ReadDesire_FullLifecycle(t *testing.T) {
 
 	c := readdesire.New(
 		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
-		100*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+		100*time.Millisecond,
 	)
 	go func() { _ = c.Start(ctx) }()
 
@@ -154,7 +154,7 @@ func TestEnvtest_ReadDesire_ClusterScopedResource(t *testing.T) {
 
 	c := readdesire.New(
 		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
-		100*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+		100*time.Millisecond,
 	)
 	go func() { _ = c.Start(ctx) }()
 
@@ -199,7 +199,7 @@ func TestEnvtest_ReadDesire_GoroutinesDoNotLeakOnShutdown(t *testing.T) {
 
 	c := readdesire.New(
 		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
-		50*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+		50*time.Millisecond,
 	)
 
 	done := make(chan struct{})
@@ -279,7 +279,7 @@ func TestEnvtest_ReadDesire_NewCRDResolvedAutomatically(t *testing.T) {
 
 	c := readdesire.New(
 		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
-		50*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+		50*time.Millisecond,
 	)
 	go func() { _ = c.Start(ctx) }()
 
@@ -323,7 +323,7 @@ func TestEnvtest_ReadDesire_RBACDeniedListReportsNotFound(t *testing.T) {
 
 	c := readdesire.New(
 		store, store, restricted, envRESTMapper, testManagementCluster,
-		50*time.Millisecond, 200*time.Millisecond,
+		50*time.Millisecond, readdesire.WithInformerSyncTimeout(200*time.Millisecond),
 	)
 	go func() { _ = c.Start(ctx) }()
 

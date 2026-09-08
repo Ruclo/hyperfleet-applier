@@ -56,7 +56,7 @@ func TestEnvtest_ApplyReadDeleteLifecycle(t *testing.T) {
 	deleteR := deletedesire.New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 50*time.Millisecond)
 	readC := readdesire.New(
 		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
-		100*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+		100*time.Millisecond,
 	)
 	go func() { _ = applyR.Start(ctx) }()
 	go func() { _ = deleteR.Start(ctx) }()
@@ -152,7 +152,7 @@ func TestEnvtest_ApplyReadDeleteLifecycle_ClusterScoped(t *testing.T) {
 	deleteR := deletedesire.New(store, store, envDynamicClient, envRESTMapper, testManagementCluster, 50*time.Millisecond)
 	readC := readdesire.New(
 		store, store, envDynamicClient, envRESTMapper, testManagementCluster,
-		100*time.Millisecond, readdesire.DefaultInformerSyncTimeout,
+		100*time.Millisecond,
 	)
 	go func() { _ = applyR.Start(ctx) }()
 	go func() { _ = deleteR.Start(ctx) }()

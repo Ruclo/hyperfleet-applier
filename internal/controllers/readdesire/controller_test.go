@@ -203,7 +203,7 @@ func TestStart_PollsImmediatelyAndStopsCleanly(t *testing.T) {
 	store := memory.New()
 	c := New(
 		notifyingSpecLister{called: called}, store, newFakeDynamicClient(t), newTestMapper(),
-		testManagementCluster, time.Hour, DefaultInformerSyncTimeout,
+		testManagementCluster, time.Hour,
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -242,7 +242,7 @@ func TestPollOnce_UnresolvableGVRRecordsPreCheckFailed(t *testing.T) {
 
 	c := New(
 		store, store, newFakeDynamicClient(t), newNoMatchMapper(), testManagementCluster,
-		time.Second, DefaultInformerSyncTimeout,
+		time.Second,
 	)
 
 	c.pollOnce(ctx)
@@ -272,7 +272,7 @@ func TestPollOnce_ValidDesireStartsInformer(t *testing.T) {
 
 	c := New(
 		store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster,
-		time.Second, DefaultInformerSyncTimeout,
+		time.Second,
 	)
 	t.Cleanup(c.informers.shutdownAll)
 
@@ -295,7 +295,7 @@ func TestPollOnce_DeletedDesireStopsInformer(t *testing.T) {
 
 	c := New(
 		store, store, newFakeDynamicClient(t), newTestMapper(), testManagementCluster,
-		time.Second, DefaultInformerSyncTimeout,
+		time.Second,
 	)
 	t.Cleanup(c.informers.shutdownAll)
 
@@ -324,7 +324,7 @@ func TestPollOnce_ListReadDesiresFailureIsLogAndReturn(t *testing.T) {
 
 	c := New(
 		spec, counting, newFakeDynamicClient(t), newTestMapper(), testManagementCluster,
-		time.Second, DefaultInformerSyncTimeout,
+		time.Second,
 	)
 	t.Cleanup(c.informers.shutdownAll)
 
@@ -354,7 +354,6 @@ func TestPollOnce_TargetVersionChangeRebuildsInformerEndToEnd(t *testing.T) {
 
 	c := New(
 		store, store, newMultiVersionFakeDynamicClient(t), newMultiVersionTestMapper(), testManagementCluster, time.Second,
-		DefaultInformerSyncTimeout,
 	)
 	t.Cleanup(c.informers.shutdownAll)
 

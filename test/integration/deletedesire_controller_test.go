@@ -261,5 +261,6 @@ func TestEnvtest_DeleteDesire_RBACDeniedGetGetsKubeAPIError(t *testing.T) {
 
 	go func() { _ = r.Start(ctx) }()
 
-	waitForDeleteReason(t, ctx, store, id, desire.ReasonKubeAPIError)
+	dd := waitForDeleteReason(t, ctx, store, id, desire.ReasonKubeAPIError)
+	assertConditionMessageContains(t, dd.Status, desire.TypeSuccessful, "forbidden")
 }

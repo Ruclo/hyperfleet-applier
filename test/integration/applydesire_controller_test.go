@@ -284,7 +284,8 @@ func TestEnvtest_ApplyDesire_RBACDeniedApplyGetsKubeAPIError(t *testing.T) {
 	id := podIdentity(desire.TypeApply, name)
 	seedApplyDesire(t, store, id, newPodContent(t, name, defaultNamespace))
 
-	waitForApplyReason(t, ctx, store, id, desire.ReasonKubeAPIError)
+	ad := waitForApplyReason(t, ctx, store, id, desire.ReasonKubeAPIError)
+	assertConditionMessageContains(t, ad.Status, desire.TypeSuccessful, "forbidden")
 
 	if _, getErr := envDynamicClient.Resource(podGVR).Namespace(defaultNamespace).Get(
 		ctx, name, metav1.GetOptions{},

@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,17 @@ func findCondition(status desire.Status, condType string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+func assertConditionMessageContains(t *testing.T, status desire.Status, condType, substr string) {
+	t.Helper()
+	c := findCondition(status, condType)
+	if c == nil {
+		t.Fatalf("condition %q not found", condType)
+	}
+	if !strings.Contains(strings.ToLower(c.Message), strings.ToLower(substr)) {
+		t.Errorf("condition %q message = %q, want it to contain %q", condType, c.Message, substr)
+	}
 }
 
 // waitForReason polls store for id's ReadDesire until its Successful

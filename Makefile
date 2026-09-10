@@ -68,8 +68,8 @@ test: ## Run unit tests
 setup-envtest: $(LOCALBIN) ## Download the envtest binaries (etcd, kube-apiserver) into the local bin directory.
 	$(SETUP_ENVTEST) use '$(ENVTEST_K8S_VERSION)' --bin-dir $(LOCALBIN) -p path
 
-.PHONY: envtest
-envtest: fmt vet setup-envtest ## Run envtest-backed integration tests against a real kube-apiserver
+.PHONY: test-envtest
+test-envtest: fmt vet setup-envtest ## Run envtest-backed integration tests against a real kube-apiserver
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use '$(ENVTEST_K8S_VERSION)' --bin-dir $(LOCALBIN) -p path)" go test -race -tags envtest ./... -run Envtest -v
 
 .PHONY: fmt

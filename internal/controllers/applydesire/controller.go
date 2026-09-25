@@ -97,6 +97,11 @@ func (r *ApplyReconciler) Start(ctx context.Context) error {
 	}
 }
 
+// ReconcileOnce runs the single list-and-reconcile pass Start calls on each tick.
+func (r *ApplyReconciler) ReconcileOnce(ctx context.Context) error {
+	return r.reconcileAll(ctx)
+}
+
 // reconcileAll lists every ApplyDesire in the partition and reconciles each.
 // Ordinary apply failures are recorded in status and excluded from the returned
 // error; only non-conflict status-write failures are joined. Context

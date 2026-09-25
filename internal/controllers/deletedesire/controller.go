@@ -98,6 +98,11 @@ func (r *DeleteReconciler) Start(ctx context.Context) error {
 	}
 }
 
+// ReconcileOnce runs the single list-and-reconcile pass Start calls on each tick.
+func (r *DeleteReconciler) ReconcileOnce(ctx context.Context) error {
+	return r.reconcileAll(ctx)
+}
+
 // reconcileAll lists every DeleteDesire in the partition and reconciles each.
 // A failure on one desire is recorded on that desire's status and does not abort
 // the others; every such failure is also joined into the returned error so the

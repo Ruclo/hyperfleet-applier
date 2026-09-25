@@ -40,6 +40,9 @@ Thumbs.db
 .env
 .env.local
 
+# Benchmark output
+test/benchmark/results.csv
+
 # Build artifacts
 dist/
 build/

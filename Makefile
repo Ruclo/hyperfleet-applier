@@ -106,6 +106,31 @@ verify: fmt-check vet test-helm ## Run all verification checks
 .PHONY: lint-check
 lint-check: fmt-check vet ## Run static code analysis
 
+##@ Benchmark
+
+.PHONY: bench-ordering-one
+bench-ordering-one: setup-envtest ## Run one apply/delete ordering benchmark (BACKEND=envtest|mock|degraded MODE=parallel|serial N=<size>)
+	@if [ -z "$(BACKEND)" ] || [ -z "$(MODE)" ] || [ -z "$(N)" ]; then \
+		echo "bench-ordering-one requires BACKEND, MODE, and N" >&2; \
+		exit 1; \
+	fi
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use '$(ENVTEST_K8S_VERSION)' --bin-dir $(LOCALBIN) -p path)" \
+		$(GO) test -tags bench -count=1 -timeout 0 ./test/benchmark \
+		-run TestOrdering -v \
+		-args -backend='$(BACKEND)' -mode='$(MODE)' -n='$(N)' -csv='$(CURDIR)/test/benchmark/results.csv'
+
+.PHONY: bench-ordering
+bench-ordering: ## Run the full apply/delete ordering matrix into test/benchmark/results.csv
+	rm -f test/benchmark/results.csv
+	@set -e; \
+	for backend in envtest mock degraded; do \
+		for mode in parallel serial; do \
+			for n in 100 1000 10000; do \
+				$(MAKE) bench-ordering-one BACKEND=$$backend MODE=$$mode N=$$n; \
+			done; \
+		done; \
+	done
+
 ##@ Dependencies
 
 .PHONY: tidy

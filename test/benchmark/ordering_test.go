@@ -28,8 +28,8 @@ const (
 	defaultNamespace  = "default"
 	managementCluster = "bench-cluster"
 	benchOwner        = "bench-owner"
-	clientQPS         = 1000
-	clientBurst       = 2000
+	clientQPS         = 20
+	clientBurst       = 40
 
 	// csvNote is the first line of a new results file. Production leaves client
 	// QPS unset, so client-go uses 5; these rows are the latency-bound comparison.

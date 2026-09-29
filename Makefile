@@ -125,7 +125,7 @@ bench-ordering: ## Run the full apply/delete ordering matrix into test/benchmark
 	@set -e; \
 	for backend in envtest mock degraded; do \
 		for mode in parallel serial; do \
-			for n in 100 1000 10000; do \
+			for n in 10 100 1000; do \
 				$(MAKE) bench-ordering-one BACKEND=$$backend MODE=$$mode N=$$n; \
 			done; \
 		done; \
